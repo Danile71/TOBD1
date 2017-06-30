@@ -112,7 +112,11 @@ void drawScreenSelector(void) {
     drawAllData();
   } else if (CurrentDisplayIDX == 3) {
     drawExtraData();
+  } else if (CurrentDisplayIDX == 4) {
+    drawExtraFlags();
   }
+
+  
 } // end drawScreenSelector()
 
 
@@ -143,11 +147,62 @@ void drawExtraData(void) {
     u8g.setPrintPos(25, 32) ;
     u8g.print( int(getOBDdata(OBD_OXSENS2)));
 
+    u8g.drawStr( 0, 47, "SEN");
+    u8g.setPrintPos(25, 47) ;
+    u8g.print( int(getOBDdata(11)));
+
+    u8g.drawStr( 0, 62, "CLD");
+    u8g.setPrintPos(25, 62) ;
+    u8g.print( int(getOBDdata(12)));
+
+    u8g.drawStr( 65, 17, "DET" );
+    u8g.setPrintPos(92, 17) ;
+    u8g.print( int(getOBDdata(13)));
+
+    u8g.drawStr( 65, 32, "FE1");
+    u8g.setPrintPos(92, 32) ;
+    u8g.print( int(getOBDdata(14)));
+
+    u8g.drawStr( 65, 47, "FE2");
+    u8g.setPrintPos(92, 47) ;
+    u8g.print( int(getOBDdata(15)));
+
+    u8g.drawStr( 65, 62, "STR");
+    u8g.setPrintPos(92, 62) ;
+    u8g.print( int(getOBDdata(16)));
     u8g.drawVLine(63, 0, 64);
   }
   while ( u8g.nextPage() );
 }
 
+void drawExtraFlags(void) {
+  u8g.setFont(u8g_font_unifont);
+  u8g.firstPage();
+  do {
+    u8g.drawStr( 0, 17, "IDL" );
+    u8g.setPrintPos(25, 17) ;
+    u8g.print(int(getOBDdata(17)));
+
+    u8g.drawStr( 0, 32, "CND");
+    u8g.setPrintPos(25, 32) ;
+    u8g.print( int(getOBDdata(18)));
+
+    u8g.drawStr( 0, 47, "NEU");
+    u8g.setPrintPos(25, 47) ;
+    u8g.print( int(getOBDdata(19)));
+
+    u8g.drawStr( 0, 62, "EN1");
+    u8g.setPrintPos(25, 62) ;
+    u8g.print( int(getOBDdata(20)));
+
+    u8g.drawStr( 65, 17, "EN2" );
+    u8g.setPrintPos(92, 17) ;
+    u8g.print( int(getOBDdata(21)));
+
+    u8g.drawVLine(63, 0, 64);
+  }
+  while ( u8g.nextPage() );
+}
 
 void drawAllData(void) {
   // graphic commands to redraw the complete screen should be placed here
@@ -262,8 +317,8 @@ float getOBDdata(byte OBDdataIDX) {
     case OBD_IGN: // Угол опережения зажигания X*0.47-30 (град)
       returnValue = ToyotaData[OBD_IGN] * 0.47 - 30;
       break;
-    case OBD_IAC: //  Состояние клапана ХХ Для разных типов КХХ разные формулы: X/255*100 (%)    
-                  //  X (шаг)
+    case OBD_IAC: //  Состояние клапана ХХ Для разных типов КХХ разные формулы: X/255*100 (%)
+      //  X (шаг)
       returnValue = ToyotaData[OBD_IAC] * 0.39215; ///optimize divide
       break;
     case OBD_RPM: //Частота вращения коленвала X*25(об/мин)
@@ -279,18 +334,18 @@ float getOBDdata(byte OBDdataIDX) {
       returnValue = ToyotaData[OBD_MAP] * 0.256; //(Вольт) (напряжение на расходомере)
       break;
     case OBD_ECT: // Температура двигателя (ECT)
-    // В зависимости от величины Х разные формулы:
-    // 0..14:          =(Х-5)*2-60
-    // 15..38:        =(Х-15)*0.83-40
-    // 39..81:        =(Х-39)*0.47-20
-    // 82..134:      =(Х-82)*0.38
-    // 135..179:    =(Х-135)*0.44+20
-    // 180..209:    =(Х-180)*0.67+40
-    // 210..227:    =(Х-210)*1.11+60
-    // 228..236:    =(Х-228)*2.11+80
-    // 237..242:    =(Х-237)*3.83+99
-    // 243..255:    =(Х-243)*9.8+122
-    // Температура в градусах цельсия.
+      // В зависимости от величины Х разные формулы:
+      // 0..14:          =(Х-5)*2-60
+      // 15..38:        =(Х-15)*0.83-40
+      // 39..81:        =(Х-39)*0.47-20
+      // 82..134:      =(Х-82)*0.38
+      // 135..179:    =(Х-135)*0.44+20
+      // 180..209:    =(Х-180)*0.67+40
+      // 210..227:    =(Х-210)*1.11+60
+      // 228..236:    =(Х-228)*2.11+80
+      // 237..242:    =(Х-237)*3.83+99
+      // 243..255:    =(Х-243)*9.8+122
+      // Температура в градусах цельсия.
       if (ToyotaData[OBD_ECT] >= 243)
         returnValue = ((float)(ToyotaData[OBD_ECT] - 243) * 9.8) + 122;
       else if (ToyotaData[OBD_ECT] >= 237)
@@ -306,11 +361,11 @@ float getOBDdata(byte OBDdataIDX) {
       else if (ToyotaData[OBD_ECT] >= 82)
         returnValue = ((float)(ToyotaData[OBD_ECT] - 82) * 0.38);
       else if (ToyotaData[OBD_ECT] >= 39)
-        returnValue = ((float)(ToyotaData[OBD_ECT] - 39) * 0.47)-20.0;
+        returnValue = ((float)(ToyotaData[OBD_ECT] - 39) * 0.47) - 20.0;
       else if (ToyotaData[OBD_ECT] >= 15)
-        returnValue = ((float)(ToyotaData[OBD_ECT] - 15) * 0.83) -40.0;
+        returnValue = ((float)(ToyotaData[OBD_ECT] - 15) * 0.83) - 40.0;
       else
-        returnValue = ((float)(ToyotaData[OBD_ECT] - 15) * 2.0) -60.0);
+        returnValue = ((float)(ToyotaData[OBD_ECT] - 15) * 2.0) - 60.0;
       break;
     case OBD_TPS: // Положение дроссельной заслонки
       // X/2(градусы)
@@ -320,24 +375,50 @@ float getOBDdata(byte OBDdataIDX) {
     case OBD_SPD: // Скорость автомобиля (км/час)
       returnValue = ToyotaData[OBD_SPD];
       break;
-      
-      //  Коррекция для рядных/ коррекция первой половины
+
+    //  Коррекция для рядных/ коррекция первой половины
     case OBD_OXSENS:
       returnValue = (float)ToyotaData[OBD_OXSENS] * 5 / 256;
       break;
-      
-      //Коррекция второй половины
+
+    //Коррекция второй половины
     case OBD_OXSENS2:// Lambda2 tst
       returnValue = (float)ToyotaData[OBD_OXSENS2] * 5 / 256;
       break;
-      
-      
-      
-    case 11:// FLAG #1
-      returnValue = ToyotaData[11];
+
+    //  читаем Байты флагов побитно
+    case 11:
+      returnValue = bitRead(ToyotaData[11], 0);  //  Переобогащение после запуска 1-Вкл
       break;
-    case 12:// FLAG # 2
-      returnValue = ToyotaData[12];
+    case 12:
+      returnValue = bitRead(ToyotaData[11], 1); //Холодный двигатель 1-Да
+      break;
+    case 13:
+      returnValue = bitRead(ToyotaData[11], 4); //Детонация 1-Да
+      break;
+    case 14:
+      returnValue = bitRead(ToyotaData[11], 5); //Обратная связь по лямбда зонду 1-Да
+      break;
+    case 15:
+      returnValue = bitRead(ToyotaData[11], 6); //Дополнительное обогащение 1-Да
+      break;
+    case 16:
+      returnValue = bitRead(ToyotaData[12], 0); //Стартер 1-Да
+      break;
+    case 17:
+      returnValue = bitRead(ToyotaData[12], 1); //Признак ХХ (Дроссельная заслонка) 1-Да(Закрыта)
+      break;
+    case 18:
+      returnValue = bitRead(ToyotaData[12], 2); //Кондиционер 1-Да
+      break;
+    case 19:
+      returnValue = bitRead(ToyotaData[13], 3); //Нейтраль 1-Да
+      break;
+    case 20:
+      returnValue = bitRead(ToyotaData[14], 4); //Смесь  первой половины 1-Богатая, 0-Бедная
+      break;
+    case 21:
+      returnValue = bitRead(ToyotaData[14], 5); //Смесь второй половины 1-Богатая, 0-Бедная
       break;
     default: // DEFAULT CASE (in no match to number)
       // send "error" value
@@ -355,7 +436,7 @@ void ButtonChangeState() {
   // only on HIGH ((press) and OBDConnected = true
   if (buttonState && OBDConnected ) {
     CurrentDisplayIDX += 1;
-    if (CurrentDisplayIDX > 3) {
+    if (CurrentDisplayIDX > 4) {
       CurrentDisplayIDX = 1;
     }
     // all screen chnage
