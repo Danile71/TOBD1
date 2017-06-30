@@ -256,59 +256,83 @@ float getOBDdata(byte OBDdataIDX) {
     case 0:// UNKNOWN
       returnValue = ToyotaData[0];
       break;
-    case OBD_INJ: //  Injector pulse width (INJ) - in milisec
-      //returnValue = ToyotaData[OBD_INJ]/10;
-      returnValue = ToyotaData[OBD_INJ] * 0.125; //test
+    case OBD_INJ: //  Время впрыска форсунок	=X*0.125 (мс)
+      returnValue = ToyotaData[OBD_INJ] * 0.125; //Время впрыска форсунок
       break;
-    case OBD_IGN: // Ignition timing angle (IGN) - degree- BTDC
-      //returnValue = ToyotaData[OBD_IGN] - 90;
+    case OBD_IGN: // Угол опережения зажигания X*0.47-30 (град)
       returnValue = ToyotaData[OBD_IGN] * 0.47 - 30;
       break;
-    case OBD_IAC: //Idle Air Control (IAC) - Step # X = 125 = open 100%
-      //     returnValue = ToyotaData[OBD_IAC]/125*100;
+    case OBD_IAC: //  Состояние клапана ХХ Для разных типов КХХ разные формулы: X/255*100 (%)    
+                  //  X (шаг)
       returnValue = ToyotaData[OBD_IAC] * 0.39215; ///optimize divide
       break;
-    case OBD_RPM: //Engine speed (RPM)
+    case OBD_RPM: //Частота вращения коленвала X*25(об/мин)
       returnValue = ToyotaData[OBD_RPM] * 25;
       break;
-    case OBD_MAP: //Manifold Absolute Pressure (MAP) - kPa Abs
-      //returnValue = ToyotaData[OBD_MAP];
-      returnValue = ToyotaData[OBD_MAP] * 0.256; //MAF m/s
+    case OBD_MAP: //Расходомер воздуха (MAP/MAF)
+      //  X*0.6515 (кПа)
+      //  X*4.886 (мм.ртут.столба)
+      //  X*0.97 (кПа) (для турбомоторов)
+      //  X*7.732 (мм.рт.ст) (для турбомоторов)
+      //  (гр/сек) (данная формула для MAF так и не найдена)
+      //  X/255*5 (Вольт) (напряжение на расходомере)
+      returnValue = ToyotaData[OBD_MAP] * 0.256; //(Вольт) (напряжение на расходомере)
       break;
-    case OBD_ECT: // Engine Coolant Temperature (ECT)
-      if (ToyotaData[OBD_ECT] >= 244)
-        returnValue = ((float)(ToyotaData[OBD_ECT] - 244) * 10.0) + 132.0;
-      else if (ToyotaData[OBD_ECT] >= 238)
-        returnValue = ((float)(ToyotaData[OBD_ECT] - 238) * 4.0) + 103.0;
+    case OBD_ECT: // Температура двигателя (ECT)
+    // В зависимости от величины Х разные формулы:
+    // 0..14:          =(Х-5)*2-60
+    // 15..38:        =(Х-15)*0.83-40
+    // 39..81:        =(Х-39)*0.47-20
+    // 82..134:      =(Х-82)*0.38
+    // 135..179:    =(Х-135)*0.44+20
+    // 180..209:    =(Х-180)*0.67+40
+    // 210..227:    =(Х-210)*1.11+60
+    // 228..236:    =(Х-228)*2.11+80
+    // 237..242:    =(Х-237)*3.83+99
+    // 243..255:    =(Х-243)*9.8+122
+    // Температура в градусах цельсия.
+      if (ToyotaData[OBD_ECT] >= 243)
+        returnValue = ((float)(ToyotaData[OBD_ECT] - 243) * 9.8) + 122;
+      else if (ToyotaData[OBD_ECT] >= 237)
+        returnValue = ((float)(ToyotaData[OBD_ECT] - 237) * 3.83) + 99;
       else if (ToyotaData[OBD_ECT] >= 228)
-        returnValue = ((float)(ToyotaData[OBD_ECT] - 228) * 2.1) + 80.0;
+        returnValue = ((float)(ToyotaData[OBD_ECT] - 228) * 2.11) + 80.0;
       else if (ToyotaData[OBD_ECT] >= 210)
         returnValue = ((float)(ToyotaData[OBD_ECT] - 210) * 1.11) + 60.0;
       else if (ToyotaData[OBD_ECT] >= 180)
-        returnValue = ((float)(ToyotaData[OBD_ECT] - 180) * 0.666) + 40.0;
+        returnValue = ((float)(ToyotaData[OBD_ECT] - 180) * 0.67) + 40.0;
       else if (ToyotaData[OBD_ECT] >= 135)
-        returnValue = ((float)(ToyotaData[OBD_ECT] - 135) * 0.444) + 20.0;
+        returnValue = ((float)(ToyotaData[OBD_ECT] - 135) * 0.44) + 20.0;
       else if (ToyotaData[OBD_ECT] >= 82)
-        returnValue = ((float)(ToyotaData[OBD_ECT] - 82) * 0.377) + 0.0;
+        returnValue = ((float)(ToyotaData[OBD_ECT] - 82) * 0.38);
       else if (ToyotaData[OBD_ECT] >= 39)
-        returnValue = ((float)(ToyotaData[OBD_ECT] - 39) * 0.465) + (-20.0);
+        returnValue = ((float)(ToyotaData[OBD_ECT] - 39) * 0.47)-20.0;
       else if (ToyotaData[OBD_ECT] >= 15)
-        returnValue = ((float)(ToyotaData[OBD_ECT] - 15) * 0.833) + (-40.0);
+        returnValue = ((float)(ToyotaData[OBD_ECT] - 15) * 0.83) -40.0;
       else
-        returnValue = ((float)ToyotaData[OBD_ECT] * 2.0) + (-70.0);
+        returnValue = ((float)(ToyotaData[OBD_ECT] - 15) * 2.0) -60.0);
       break;
-    case OBD_TPS: // Throttle Position Sensor (TPS) - DEGREE
+    case OBD_TPS: // Положение дроссельной заслонки
+      // X/2(градусы)
+      // X/1.8(%)
       returnValue = ToyotaData[OBD_TPS] / 2;
       break;
-    case OBD_SPD: // Speed (SPD) - km/h
+    case OBD_SPD: // Скорость автомобиля (км/час)
       returnValue = ToyotaData[OBD_SPD];
       break;
-    case OBD_OXSENS:// Lambda1
+      
+      //  Коррекция для рядных/ коррекция первой половины
+    case OBD_OXSENS:
       returnValue = (float)ToyotaData[OBD_OXSENS] * 5 / 256;
       break;
+      
+      //Коррекция второй половины
     case OBD_OXSENS2:// Lambda2 tst
       returnValue = (float)ToyotaData[OBD_OXSENS2] * 5 / 256;
       break;
+      
+      
+      
     case 11:// FLAG #1
       returnValue = ToyotaData[11];
       break;
