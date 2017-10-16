@@ -7,12 +7,23 @@
 
 // display
 #include "U8glib.h"
+#include "SdFat.h"
+#include <SPI.h>
 #include <EEPROM.h>
 #include <Bounce2.h>
 U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NONE);
 #define DEBUG_OUTPUT true // for debug option - swith output to Serial
 #define ENGINE_DATA_PIN 2 //VF1 PIN
-#define TOGGLE_BTN_PIN 3 //screen change PIN
+#define TOGGLE_BTN_PIN 4 //screen change PIN
+
+const uint8_t chipSelect = SS;
+const uint16_t SAMPLE_INTERVAL_MS = 1000;
+#define FILE_BASE_NAME "Data"
+SdFat sd;
+SdFile file;
+//uint32_t logTime;
+#define error(msg) sd.errorHalt(F(msg))
+
 Bounce BTN_SCREEN = Bounce(); //создаем экземпляр класса Bounce
 byte CurrentDisplayIDX;
 
@@ -20,13 +31,14 @@ byte CurrentDisplayIDX;
 //#define SPEED_PIN A6 // Номер ноги для датчика скорости
 //#define INJECTOR_PIN A7 // Номер ноги для форсунки
 #define Ls 0.004 //производительсность форсунки литров в секунду
-#define Ncyl 6; //кол-во цилиндров
+#define Ncyl 6 //кол-во цилиндров
 
 unsigned long t;
-
-float total_duration;
+int buttonState = 0;
+//float total_duration;
 float total_consumption;
-float current_duration;
+//float current_duration;
+float current_consumption;
 
 float current_run;
 float total_run;
@@ -70,6 +82,8 @@ unsigned long OBDLastSuccessPacket;
 
 void setup() {
   //float f = 0.00f;
+  char fileName[13] = FILE_BASE_NAME "00.csv";
+  const uint8_t BASE_NAME_SIZE = sizeof(FILE_BASE_NAME) - 1;
   Serial.begin(115200);
   if (DEBUG_OUTPUT) {
     Serial.println("system Started");
@@ -83,6 +97,25 @@ void setup() {
   //Serial.println(f, 3);    //This may print 'ovf, nan' if the data inside the EEPROM is not a valid float.
   //EEPROM.get(204, f);
   //Serial.println(f, 3);    //This may print 'ovf, nan' if the data inside the EEPROM is not a valid float.
+  if (!sd.begin(chipSelect, SD_SCK_MHZ(50))) {
+    sd.initErrorHalt();
+  }
+  while (sd.exists(fileName)) {
+    if (fileName[BASE_NAME_SIZE + 1] != '9') {
+      fileName[BASE_NAME_SIZE + 1]++;
+    } else if (fileName[BASE_NAME_SIZE] != '9') {
+      fileName[BASE_NAME_SIZE + 1] = '0';
+      fileName[BASE_NAME_SIZE]++;
+    } else {
+      error("Can't create file name");
+    }
+  }
+
+
+  if (!file.open(fileName, O_CREAT | O_WRITE )) {
+    error("file.open");
+  }
+  writeHeader();
   displayNoConnection(); // Display no connection
 
   pinMode(ENGINE_DATA_PIN, INPUT); // VF1 PIN
@@ -90,6 +123,7 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(ENGINE_DATA_PIN), ChangeState, CHANGE); //setup Interrupt for data line
 
   pinMode(TOGGLE_BTN_PIN, INPUT);           // кнопка СЛЕД. ЭКРАН
+
   BTN_SCREEN.attach(TOGGLE_BTN_PIN); // устанавливаем кнопку
   BTN_SCREEN.interval(50); // устанавливаем параметр stable interval = 50 мс
 
@@ -99,25 +133,30 @@ void setup() {
   //Расходомер
   EEPROM.get(104, total_run);
   EEPROM.get(108, total_time);
-  EEPROM.get(200, total_duration);
+  //  EEPROM.get(200, total_duration);
   EEPROM.get(204, total_consumption);
   t = millis();
   //Расходомер
 } // END VOID SETUP
 
+
+
+
+
 void loop(void) {
   unsigned long new_t;
   unsigned int diff_t;
+  //logData();
   if (ToyotaNumBytes > 0)  {    // if found bytes
-    if (DEBUG_OUTPUT) debugdataoutput();
+    //    if (DEBUG_OUTPUT) debugdataoutput();
     new_t = millis();
     if (new_t > t) {
       diff_t = new_t - t;
-      //current_duration = getOBDdata(OBD_RPM) / 60 / 2 * Ncyl * diff_t / 1000 * getOBDdata(OBD_INJ); // Время открытия 6 форсунок за текущий такт ОБД данных (в миллисекундах) с текущими оборотами
-      current_consumption = getOBDdata(OBD_RPM) / 60 / 2 * Ncyl * diff_t / 1000 * getOBDdata(OBD_INJ)/1000*Ls; // Потребление 6 форсунок за текущий такт ОБД данных (в литрах) с текущими оборотами
-      total_consumption+=current_consumption;
+      //current_duration = getOBDdata(OBD_RPM) / 60 / 2 * 6 * diff_t / 1000 * getOBDdata(OBD_INJ); // Время открытия 6 форсунок за текущий такт ОБД данных (в миллисекундах) с текущими оборотами
+      current_consumption = getOBDdata(OBD_RPM) / 60 / 2 * Ncyl * diff_t / 1000 * getOBDdata(OBD_INJ) / 1000 * Ls; // Потребление 6 форсунок за текущий такт ОБД данных (в литрах) с текущими оборотами
+      total_consumption += current_consumption;
 
-      
+
       //ОБ/М           ОБ/С
       //форсунка срабатывает раз в 2 оборота КВ
       //6форсунок в с
@@ -134,23 +173,20 @@ void loop(void) {
       total_avg_consumption = total_consumption * 100 / total_run;  //    среднее потребление за все время - Л на 100км
       total_avg_speed = total_run / total_time * 3600000;           // средняя скорость за все время. км\ч
 
-      Serial.println(total_duration, 3);
-      Serial.println(total_consumption, 3);
-      Serial.println(current_run, 3);
-      Serial.println(current_time, 3);
       t = millis();
+      
     }
-
     drawScreenSelector(); // draw screen
+    logData();
     OBDLastSuccessPacket = millis(); // set last success
     OBDConnected = true; // set connected to true
     ToyotaNumBytes = 0;     // reset the counter.
   } // end if (ToyotaNumBytes > 0)
 
 
-  if (ToyotaFailBit > 0 && DEBUG_OUTPUT )  {
-    debugfaildataoutput();  // if found FAILBIT and dbug
-  }
+  // if (ToyotaFailBit > 0 && DEBUG_OUTPUT )  {
+  //   debugfaildataoutput();  // if found FAILBIT and dbug
+  // }
 
 
   if (OBDLastSuccessPacket + 3500 < millis() && OBDConnected) {   //check for lost connection
@@ -162,20 +198,18 @@ void loop(void) {
   if (getOBDdata(OBD_SPD) == 0 && flagNulSpeed == false)  {
     EEPROM.put(104, total_run);
     EEPROM.put(108, total_time);
-    EEPROM.put(200, total_duration);
+    //    EEPROM.put(200, total_duration);
     EEPROM.put(204, total_consumption);
     flagNulSpeed = true;
   }
-
   if (getOBDdata(OBD_SPD) != 0) flagNulSpeed = false;
 
   ent();
-
 } // end void loop
 
 void drawScreenSelector(void) {
   if (CurrentDisplayIDX == 1) {
-    drawSpeedRpm();
+ //   drawSpeedRpm();
   } else if (CurrentDisplayIDX == 2) {
     drawAllData();
   } else if (CurrentDisplayIDX == 3) {
@@ -222,7 +256,7 @@ void drawFuelConsuption(void) {
 
     u8g.drawStr( 65, 62, "Cdr");
     u8g.setPrintPos(92, 62) ;
-    u8g.print( current_duration, 2);
+    u8g.print( current_consumption, 2);
 
     u8g.drawVLine(63, 0, 64);
   }
@@ -334,6 +368,7 @@ void drawAllData(void) {
   } while ( u8g.nextPage() ); // end picture loop
 } // end void drawalldata
 
+/*
 void drawSpeedRpm() {
 
   // define setytings for screen
@@ -350,7 +385,7 @@ void drawSpeedRpm() {
   int rpmToDisplay = int (float(getOBDdata(OBD_RPM)) / 500); // calc the rpm bars    then check to add +1 if pased the +250
   if (double(double(getOBDdata(OBD_RPM)) / 500.0) - int(getOBDdata(OBD_RPM) / 500) > 0.5) {
     rpmToDisplay += 1;
-  } // end if */
+  } // end if 
 
   // picture loop
   u8g.firstPage();
@@ -368,6 +403,7 @@ void drawSpeedRpm() {
 
 } //end void drawSpeedRpm()
 
+*/
 
 void displayNoConnection() {
   u8g.setFont(u8g_font_unifont);
@@ -583,8 +619,8 @@ void ChangeState() {
     } // end while
   } // end (InPacket == false)
 } // end void change
-
-void debugdataoutput() {
+/*
+  void debugdataoutput() {
   // output to Serial.
   Serial.print("ID=");
   Serial.print(ToyotaID);
@@ -594,9 +630,9 @@ void debugdataoutput() {
     Serial.print(ToyotaData[i]);
   }
   Serial.println(".");
-} // end void
+  } // end void
 
-void debugfaildataoutput() {
+  void debugfaildataoutput() {
   Serial.print("FAIL = ");
   Serial.print(ToyotaFailBit);
   if (((ToyotaFailBit - 4) % 11) == 0)
@@ -605,21 +641,76 @@ void debugfaildataoutput() {
     Serial.print(" (StopBit)");
   Serial.println(".");
   ToyotaFailBit = 0;
-} // end void
-
+  } // end void
+*/
 void ent() {
   //ПЕРЕКЛЮЧЕНИЕ ЭКРАНОВ
-  if (BTN_SCREEN.update())
+ // buttonState = digitalRead(TOGGLE_BTN_PIN);
+    if (BTN_SCREEN.update())
   { if (BTN_SCREEN.read() == HIGH) //если отпускаем
-    {
-      CurrentDisplayIDX++;
-      //EEPROM.write(0,numScreen);
-    }
-    if (CurrentDisplayIDX > 4)
-    {
-      CurrentDisplayIDX = 1;
-    }
+  //if (buttonState == HIGH) {
+    CurrentDisplayIDX++;
+    if (CurrentDisplayIDX > 4) CurrentDisplayIDX = 1;
     drawScreenSelector();
   }
 }
+
+
+void writeHeader() {
+  file.print(F("INJ, IGN, IAC, RPM, MAP, ECT, TPS, SPD, OXSENS1, OXSENS2, ASE, COLD, DET, OXf1, OXf2, ENRICHMENT, STARTER, IDLE, A/C, NEUTRAL, Ex1, Ex2, AVG CONSUMPTION, AVG SPEED, LPK, LPH"));
+  file.println();
+}
+
+void logData() {
+  file.print(getOBDdata(OBD_INJ));
+  file.write(',');
+  file.print(getOBDdata(OBD_IGN));
+  file.write(',');
+  file.print(getOBDdata(OBD_IAC));
+  file.write(',');
+  file.print(getOBDdata(OBD_RPM));
+  file.write(',');
+  file.print(getOBDdata(OBD_MAP));
+  file.write(',');
+  file.print(getOBDdata(OBD_ECT));
+  file.write(',');
+  file.print(getOBDdata(OBD_TPS));
+  file.write(',');
+  file.print(getOBDdata(OBD_OXSENS));
+  file.write(',');
+  file.print(getOBDdata(OBD_OXSENS2));
+  file.write(',');
+  file.print(getOBDdata(11));
+  file.write(',');
+  file.print(getOBDdata(12));
+  file.write(',');
+  file.print(getOBDdata(13));
+  file.write(',');
+  file.print(getOBDdata(14));
+  file.write(',');
+  file.print(getOBDdata(15));
+  file.write(',');
+  file.print(getOBDdata(16));
+  file.write(',');
+  file.print(getOBDdata(17));
+  file.write(',');
+  file.print(getOBDdata(18));
+  file.write(',');
+  file.print(getOBDdata(19));
+  file.write(',');
+  file.print(getOBDdata(20));
+  file.write(',');
+  file.print(getOBDdata(21));
+  file.write(',');
+  file.print(total_avg_consumption);
+  file.write(',');
+  file.print(total_avg_speed);
+  file.write(',');
+  file.print(100 / getOBDdata(OBD_SPD) * (getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18));
+  file.write(',');
+  file.print(getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18);
+  file.println();
+  if (!file.sync() || file.getWriteError())  error("write error");
+}
+
 
