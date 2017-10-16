@@ -20,7 +20,7 @@ byte CurrentDisplayIDX;
 //#define SPEED_PIN A6 // Номер ноги для датчика скорости
 //#define INJECTOR_PIN A7 // Номер ноги для форсунки
 #define Ls 0.004 //производительсность форсунки литров в секунду
-
+#define Ncyl 6; //кол-во цилиндров
 
 unsigned long t;
 
@@ -113,13 +113,17 @@ void loop(void) {
     new_t = millis();
     if (new_t > t) {
       diff_t = new_t - t;
-      current_duration = getOBDdata(OBD_RPM) / 60 / 2 * 6 * diff_t / 1000 * getOBDdata(OBD_INJ); // Время открытия 6 форсунок за текущий такт ОБД данных (в миллисекундах) с текущими оборотами
+      //current_duration = getOBDdata(OBD_RPM) / 60 / 2 * Ncyl * diff_t / 1000 * getOBDdata(OBD_INJ); // Время открытия 6 форсунок за текущий такт ОБД данных (в миллисекундах) с текущими оборотами
+      current_consumption = getOBDdata(OBD_RPM) / 60 / 2 * Ncyl * diff_t / 1000 * getOBDdata(OBD_INJ)/1000*Ls; // Потребление 6 форсунок за текущий такт ОБД данных (в литрах) с текущими оборотами
+      total_consumption+=current_consumption;
+
+      
       //ОБ/М           ОБ/С
       //форсунка срабатывает раз в 2 оборота КВ
       //6форсунок в с
       //время цикла мс в с. Получаем кол-во срабатываний за время цикла. Умножаем на время открытия форсунки, получаем время открытия 6 форсунок В МИЛЛИСЕКУНДАХ
-      total_duration += current_duration; //Суммарное время, когда форсунка была открыта. EEPROM В МИЛЛИСЕКУНДАХ
-      total_consumption = total_duration / 1000 * Ls; // Суммарный расход бензина по суммарному времени открытия форсунок. EEPROM. В ЛИТРАХ
+      //total_duration += current_duration; //Суммарное время, когда форсунка была открыта. EEPROM В МИЛЛИСЕКУНДАХ
+      //total_consumption = total_duration / 1000 * Ls; // Суммарный расход бензина по суммарному времени открытия форсунок. EEPROM. В ЛИТРАХ
 
       current_run = diff_t / 3600000 * getOBDdata(OBD_SPD); // Пройденное расстояние за текущий такт ОБД данных. В КМ
       total_run += current_run;                                 //Полное пройденное расстояние. EEPROM. В КМ
