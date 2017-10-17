@@ -28,16 +28,9 @@ const uint8_t chipSelect = SS;
 
 SdFat sd;
 SdFile file;
-//uint32_t logTime;
-
 
 Bounce BTN_SCREEN = Bounce(); //создаем экземпляр класса Bounce
 byte CurrentDisplayIDX;
-
-//Расходомер
-//#define SPEED_PIN A6 // Номер ноги для датчика скорости
-
-
 
 unsigned long t;
 
@@ -53,17 +46,9 @@ unsigned long total_time;
 float total_avg_consumption, avg_consumption;
 float total_avg_speed, avg_speed;
 
-//float avg_consumption;
-//float avg_speed;
-
 bool flagNulSpeed = true;
-volatile unsigned long InjectorTime1 = 0, InjectorTime2 = 0, Injector_Open_Duration = 0, seconds_passed = 0;
-volatile float used_gasoline;
-volatile byte InjectorCounter = 0;
-volatile unsigned int RPS = 0, INJ_TEST;
-unsigned int RPM = 0;
-//Расходомер
-
+volatile unsigned long  Injector_Open_Duration = 0, INJ_TIME;
+float used_gasoline;
 
 #define LED_PIN          13
 // I have inverted the Eng line using an Opto-Coupler, if yours isn't then reverse these low & high defines.
@@ -97,15 +82,6 @@ void setup() {
   if (DEBUG_OUTPUT) {
     Serial.println("system Started");
   }
-  //Serial.print("Read float from EEPROM: ");
-
-  //Get the float data from the EEPROM at position 'eeAddress'
-  //EEPROM.get(104, f);
-  //Serial.println(f, 3);    //This may print 'ovf, nan' if the data inside the EEPROM is not a valid float.
-  //EEPROM.get(200, f);
-  //Serial.println(f, 3);    //This may print 'ovf, nan' if the data inside the EEPROM is not a valid float.
-  //EEPROM.get(204, f);
-  //Serial.println(f, 3);    //This may print 'ovf, nan' if the data inside the EEPROM is not a valid float.
   if (!sd.begin(chipSelect, SD_SCK_MHZ(50))) {
     sd.initErrorHalt();
   }
@@ -125,7 +101,7 @@ void setup() {
     error("file.open");
   }
   writeHeader();
-  displayNoConnection(); // Display no connection
+  //displayNoConnection(); // Display no connection
 
   noInterrupts();
   // set and initialize the TIMER1
@@ -137,7 +113,6 @@ void setup() {
 
   pinMode(ENGINE_DATA_PIN, INPUT); // VF1 PIN
   pinMode(INJECTOR_PIN, INPUT); // Injector PIN
-
   pinMode(LED_PIN, OUTPUT);
   attachInterrupt(digitalPinToInterrupt(ENGINE_DATA_PIN), ChangeState, CHANGE); //setup Interrupt for data line
   attachInterrupt(digitalPinToInterrupt(INJECTOR_PIN), InjectorTime, CHANGE); //setup Interrupt for data line
@@ -147,15 +122,16 @@ void setup() {
   BTN_SCREEN.interval(50); // устанавливаем параметр stable interval = 50 мс
 
   // Set OBD to not connected
-  OBDConnected = false;
+  //OBDConnected = false;
   CurrentDisplayIDX = 1; // set to display 1
   //Расходомер
-
   EEPROM.get(104, total_run);
   EEPROM.get(108, total_time);
-  //  EEPROM.get(200, total_duration);
+  EEPROM.get(200, used_gasoline);
   EEPROM.get(204, total_consumption);
   t = millis();
+  interrupts();
+  delay(10);
   //Расходомер
 } // END VOID SETUP
 
@@ -168,7 +144,6 @@ void loop(void) {
   unsigned int diff_t;
   ent();
   if (ToyotaNumBytes > 0)  {    // if found bytes
-    //    if (DEBUG_OUTPUT) debugdataoutput();
     new_t = millis();
     if (new_t > t) {
       diff_t = new_t - t;
@@ -203,32 +178,27 @@ void loop(void) {
     ToyotaNumBytes = 0;     // reset the counter.
   } // end if (ToyotaNumBytes > 0)
 
-
-  // if (ToyotaFailBit > 0 && DEBUG_OUTPUT )  {
-  //   debugfaildataoutput();  // if found FAILBIT and dbug
-  // }
   if (millis() % 5000 < 50)
   {
     avg_speed = (current_run / current_time) ;        //average speed
     avg_consumption = 100 * used_gasoline / current_run; //average l/100km for unleaded fuel
-    RPM = RPS * 60;
+
   }
-
-  if (OBDLastSuccessPacket + 3500 < millis() && OBDConnected) {   //check for lost connection
-    displayNoConnection();  // show no connection
-    OBDConnected = false;  // set OBDConnected to false.
-  } // end if loas conntcion
-
-
+  /*
+    if (OBDLastSuccessPacket + 3500 < millis() && OBDConnected) {   //check for lost connection
+      displayNoConnection();  // show no connection
+      OBDConnected = false;  // set OBDConnected to false.
+    } // end if loas conntcion
+  */
+  Serial.println("qq");
   if (getOBDdata(OBD_SPD) == 0 && flagNulSpeed == false)  {
     EEPROM.put(104, total_run);
     EEPROM.put(108, total_time);
-    //    EEPROM.put(200, total_duration);
+    EEPROM.put(200, used_gasoline);
     EEPROM.put(204, total_consumption);
-
-
     flagNulSpeed = true;
   }
+  if (millis() % 250 < 50) logData();
   if (getOBDdata(OBD_SPD) != 0) flagNulSpeed = false;
 } // end void loop
 
@@ -245,16 +215,16 @@ void drawFuelConsuption(void) {
   do {
     u8g.drawStr( 0, 17, "Ft1" );
     u8g.setPrintPos(25, 17) ;
-    u8g.print(used_gasoline, 2);
+    u8g.print(used_gasoline, 1);
 
     //u8g.drawStr( 0, 17, "SPD" );
     //u8g.setPrintPos(25, 17) ;
     //u8g.print(total_avg_speed, 2);
 
 
-    u8g.drawStr( 0, 32, "Fto");
+    u8g.drawStr( 0, 32, "Ft2");
     u8g.setPrintPos(25, 32) ;
-    u8g.print(total_consumption, 2);
+    u8g.print(total_consumption, 1);
 
     u8g.drawStr( 0, 47, "KMt");
     u8g.setPrintPos(25, 47) ;
@@ -262,11 +232,11 @@ void drawFuelConsuption(void) {
 
     u8g.drawStr( 0, 62, "Hto");
     u8g.setPrintPos(25, 62) ;
-    u8g.print(total_time / 3600000, 2);
+    u8g.print(float(total_time) / 3600000, 1);
 
     u8g.drawStr( 65, 17, "Fav" );
     u8g.setPrintPos(92, 17) ;
-    u8g.print(total_avg_consumption, 2);
+    u8g.print(total_avg_consumption, 1);
 
     u8g.drawStr( 65, 32, "LPK");
     u8g.setPrintPos(92, 32) ;
@@ -278,7 +248,7 @@ void drawFuelConsuption(void) {
 
     u8g.drawStr( 65, 62, "Cdr");
     u8g.setPrintPos(92, 62) ;
-    u8g.print( current_consumption, 2);
+    u8g.print( current_consumption, 1);
 
     u8g.drawVLine(63, 0, 64);
   }
@@ -366,21 +336,13 @@ void drawAllData(void) {
     u8g.setPrintPos(25, 17) ;
     u8g.print(getOBDdata(OBD_INJ));
 
-    // u8g.drawStr( 0, 32, "IGN");
-    // u8g.setPrintPos(25, 32) ;
-    // u8g.print( int(getOBDdata(OBD_IGN)));
-
-    u8g.drawStr( 0, 32, "RPM");
+    u8g.drawStr( 0, 32, "IGN");
     u8g.setPrintPos(25, 32) ;
-    u8g.print(RPM);
+    u8g.print( int(getOBDdata(OBD_IGN)));
 
-    //u8g.drawStr( 0, 47, "IAC");
-    // u8g.setPrintPos(25, 47) ;
-    // u8g.print( int(getOBDdata(OBD_IAC)));
-
-    u8g.drawStr( 0, 47, "INJ");
+    u8g.drawStr( 0, 47, "IAC");
     u8g.setPrintPos(25, 47) ;
-    u8g.print(INJ_TEST);
+    u8g.print( int(getOBDdata(OBD_IAC)));
 
     u8g.drawStr( 0, 62, "RPM");
     u8g.setPrintPos(25, 62) ;
@@ -405,43 +367,6 @@ void drawAllData(void) {
     u8g.drawVLine(63, 0, 64);
   } while ( u8g.nextPage() ); // end picture loop
 } // end void drawalldata
-
-/*
-  void drawSpeedRpm() {
-
-  // define setytings for screen
-  u8g.setFont(u8g_font_osb35n);
-  u8g.setFontRefHeightExtendedText();
-  u8g.setDefaultForegroundColor();
-  u8g.setFontPosTop();
-
-  // convert into to char so we can get the width
-  char buf[4];
-  itoa (int(getOBDdata(OBD_SPD)), buf, 10);
-
-  // "calc" rpm bars to diaply - MAX 14
-  int rpmToDisplay = int (float(getOBDdata(OBD_RPM)) / 500); // calc the rpm bars    then check to add +1 if pased the +250
-  if (double(double(getOBDdata(OBD_RPM)) / 500.0) - int(getOBDdata(OBD_RPM) / 500) > 0.5) {
-    rpmToDisplay += 1;
-  } // end if
-
-  // picture loop
-  u8g.firstPage();
-  do {
-    // draw box
-    u8g.drawRFrame(20, 4, 90, 48, 7);
-    // print speed
-    u8g.drawStr(int(108 - u8g.getStrWidth(buf)), 10, buf);
-
-    // draw RPM
-    for (int i = 0; i < rpmToDisplay; i++) {
-      u8g.drawBox(20 + ((4 + 1)*i) + i, 55, 4, 8);
-    } // end for
-  } while ( u8g.nextPage() ); // end picture loop
-
-  } //end void drawSpeedRpm()
-
-*/
 
 void displayNoConnection() {
   u8g.setFont(u8g_font_unifont);
@@ -639,7 +564,7 @@ void ChangeState() {
           if ( (bitpos == 10) && ((bits > 1) || (bytepos == (TOYOTA_MAX_BYTES - 1))) ) {
             ToyotaNumBytes = 0;
             ToyotaID = ID;
-            for (int i = 0; i <= bytepos; i++)
+            for (uint16_t i = 0; i <= bytepos; i++)
               ToyotaData[i] = EData[i];
             ToyotaNumBytes = bytepos + 1;
             if (bits >= 16)  // Stop bits of last byte were 1's so detect preamble for next packet
@@ -657,52 +582,29 @@ void ChangeState() {
     } // end while
   } // end (InPacket == false)
 } // end void change
-/*
-  void debugdataoutput() {
-  // output to Serial.
-  Serial.print("ID=");
-  Serial.print(ToyotaID);
-  for (int i = 0; i < ToyotaNumBytes; i++)
-  {
-    Serial.print(", ");
-    Serial.print(ToyotaData[i]);
-  }
-  Serial.println(".");
-  } // end void
 
-  void debugfaildataoutput() {
-  Serial.print("FAIL = ");
-  Serial.print(ToyotaFailBit);
-  if (((ToyotaFailBit - 4) % 11) == 0)
-    Serial.print(" (StartBit)");
-  else if (((ToyotaFailBit - 4) % 11) > 8)
-    Serial.print(" (StopBit)");
-  Serial.println(".");
-  ToyotaFailBit = 0;
-  } // end void
-*/
 void ent() {
   //ПЕРЕКЛЮЧЕНИЕ ЭКРАНОВ
   if (BTN_SCREEN.update())
   { if (BTN_SCREEN.read() == HIGH) //если отпускаем
       CurrentDisplayIDX++;
     if (CurrentDisplayIDX > 4) CurrentDisplayIDX = 1;
-    //    drawScreenSelector();
+    drawScreenSelector();
   }
 }
 
 
 void writeHeader() {
 #ifdef LOGGING_FULL
-  file.print(F("INJ;INJ_TEST;IGN;IAC;RPM;RPM_FORS;MAP;ECT;TPS;SPD;OXSENS1;OXSENS2;ASE;COLD;DET;OXf;Re-ENRICHMENT;STARTER;IDLE;A/C;NEUTRAL;Ex1;Ex2;AVG CONSUMPTION;AVG SPEED;LPK;LPH;USED_OBD;USED_FORS"));
+  file.print(F("INJ;INJ_TEST;IGN;IAC;RPM;MAP;ECT;TPS;SPD;OXSENS1;OXSENS2;ASE;COLD;DET;OXf;Re-ENRICHMENT;STARTER;IDLE;A/C;NEUTRAL;Ex1;Ex2;AVG CONSUMPTION;AVG SPEED;LPK;LPH;USED_OBD;USED_FORS"));
 #endif
-  file.print(F("INJ;INJ_TEST;IGN;IAC;RPM;RPM_FORS;MAP;ECT;TPS;SPD;OXSENS1;OXSENS2;AVG CONSUMPTION;AVG SPEED;LPK;LPH;USED_OBD;USED_FORS"));
+  file.print(F("INJ;INJ_TEST;IGN;IAC;RPM;MAP;ECT;TPS;SPD;OXSENS1;OXSENS2;AVG CONSUMPTION;AVG SPEED;LPK;LPH;USED_OBD;USED_FORS"));
   file.println();
 }
 
 void logData() {
-  file.print(getOBDdata(OBD_INJ)); file.write(';'); file.print(INJ_TEST); file.write(';'); file.print(getOBDdata(OBD_IGN));  file.write(';');  file.print(getOBDdata(OBD_IAC));  file.write(';');
-  file.print(getOBDdata(OBD_RPM)); file.write(';'); file.print(RPM); file.write(';'); file.print(getOBDdata(OBD_MAP));  file.write(';'); file.print(getOBDdata(OBD_ECT));  file.write(';');
+  file.print(getOBDdata(OBD_INJ)); file.write(';'); file.print(float(float(INJ_TIME) / 1000)); file.write(';'); file.print(getOBDdata(OBD_IGN));  file.write(';');  file.print(getOBDdata(OBD_IAC));  file.write(';');
+  file.print(getOBDdata(OBD_RPM)); file.write(';'); file.print(getOBDdata(OBD_MAP));  file.write(';'); file.print(getOBDdata(OBD_ECT));  file.write(';');
   file.print(getOBDdata(OBD_TPS)); file.write(';');  file.print(getOBDdata(OBD_SPD));  file.write(';'); file.print(getOBDdata(OBD_OXSENS)); file.write(';');
   file.print(getOBDdata(OBD_OXSENS2));  file.write(';');
 #ifdef LOGGING_FULL
@@ -716,13 +618,14 @@ void logData() {
   file.print(getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18); file.write(';');
   file.print(total_consumption); file.write(';');
   file.print(used_gasoline);
-   
+
   file.println();
 
   if (!file.sync() || file.getWriteError())  error("write error");
 }
 
 void InjectorTime() { // it is called every time a change occurs at the gasoline injector signal and calculates gasoline injector opening time, during the 1sec interval
+  unsigned long InjectorTime1 = 0, InjectorTime2 = 0;
   if (digitalRead(INJECTOR_PIN) == LOW) {
     InjectorTime1 = micros();
   }
@@ -730,25 +633,13 @@ void InjectorTime() { // it is called every time a change occurs at the gasoline
     InjectorTime2 = micros();
   }
   if (InjectorTime2 > InjectorTime1) {
-    if ((InjectorTime2 - InjectorTime1) > 500 && (InjectorTime2 - InjectorTime1) < 12000) { // some conditions to avoid false readings because of noise
-      // my injectors do not open for longer than 12ms = 12000us (you can change this if you want)
-      Injector_Open_Duration += (InjectorTime2 - InjectorTime1); //total useconds that the gasoline injector opens throughout 1sec
-      INJ_TEST = Injector_Open_Duration;
-      InjectorCounter++;
-    }
+    Injector_Open_Duration += (InjectorTime2 - InjectorTime1); //total useconds that the gasoline injector opens throughout 1sec
+    INJ_TIME = InjectorTime2 - InjectorTime1;
   }
 }
 
-
 ISR(TIMER1_OVF_vect) { //TIMER1 overflow interrupt -- occurs every 1sec -- it holds the time (in seconds) and also prevents the overflowing of some variables
-  InjectorConsumption();
-  RPS = InjectorCounter * 2; // Форсунка срабатывает раз за два оборота КВ. Получаем кол-во оборотов в секунду.
+  used_gasoline += Injector_Open_Duration * Lmks;
   Injector_Open_Duration = 0;
-  InjectorCounter = 0;
-  // seconds_passed++;
   TCNT1 = 3036;
-}
-
-void InjectorConsumption() {
-  used_gasoline += Injector_Open_Duration * Lmks; //total litres of gasoline consumed -- calculated every 1sec
 }
