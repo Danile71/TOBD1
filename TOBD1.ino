@@ -12,7 +12,7 @@
 
 #include <Bounce2.h>
 
-#define LOGGING_FULL    //Запись на SD всех данных
+//#define LOGGING_FULL    //Запись на SD всех данных
 #define DEBUG_OUTPUT true // for debug option - swith output to Serial
 
 //DEFINE пинов под входы-выходы
@@ -68,9 +68,12 @@ unsigned long current_time = 0;
 unsigned long total_time = 0;
 unsigned long t;
 bool flagNulSpeed = true;
-volatile unsigned long  Injector_Open_Duration = 0;
+volatile unsigned long Injector_Open_Duration = 0;
 volatile unsigned long INJ_TIME;
-volatile float total_consumption_inj, current_consumption_inj;
+volatile unsigned long InjectorTime1;
+volatile unsigned long InjectorTime2;
+
+float total_consumption_inj, current_consumption_inj;
 volatile uint8_t ToyotaNumBytes, ToyotaID, ToyotaData[TOYOTA_MAX_BYTES];
 volatile uint16_t ToyotaFailBit = 0;
 
@@ -82,6 +85,7 @@ unsigned long OBDLastSuccessPacket;
 void setup() {
   char fileName[13] = FILE_BASE_NAME "00.csv";
   const uint8_t BASE_NAME_SIZE = sizeof(FILE_BASE_NAME) - 1;
+  noInterrupts();
   Serial.begin(115200);
   if (DEBUG_OUTPUT) {
     Serial.println("system Started");
@@ -107,7 +111,15 @@ void setup() {
   writeHeader();
   //displayNoConnection(); // Display no connection
 
-  noInterrupts();
+  // set and initialize the TIMER1
+  TCCR1A = 0; // set entire TCCR1A register to 0
+  TCCR1B = 0; // set entire TCCR1B register to 0
+  TCCR1B |= (1 << CS12);//prescaler 256 --> Increment time = 256/16.000.000= 16us
+  TIMSK1 |= (1 << TOIE1); // enable Timer1 overflow interrupt
+  TCNT1 = 3036; // counter initial value so as to overflow every 1sec: 65536 - 3036 = 62500 * 16us = 1sec (65536 maximum value of the timer)
+
+
+
   pinMode(ENGINE_DATA_PIN, INPUT); // VF1 PIN
   pinMode(INJECTOR_PIN, INPUT); // Injector PIN
   pinMode(LED_PIN, OUTPUT);
@@ -144,23 +156,23 @@ void loop(void) {
     new_t = millis();
     if (new_t > t) {
       diff_t = new_t - t;
-      current_consumption = getOBDdata(OBD_RPM) / 60 / 2 * Ncyl * diff_t / 1000 * getOBDdata(OBD_INJ) / 1000 * Ls; // Потребление 6 форсунок за текущий такт ОБД данных (в литрах) с текущими оборотами c момента включения
+      current_consumption = getOBDdata(OBD_RPM) / 60 / 2 * Ncyl * (float)diff_t / 1000 * getOBDdata(OBD_INJ) / 1000 * Ls; // Потребление 6 форсунок за текущий такт ОБД данных (в литрах) с текущими оборотами c момента включения
       total_consumption += current_consumption;         //потребление бензина за все время в литрах. EEPROM
       //ОБ/М           ОБ/С
       //форсунка срабатывает раз в 2 оборота КВ
       //6форсунок в с
       //время цикла мс в с. Получаем кол-во срабатываний за время цикла. Умножаем на время открытия форсунки, получаем время открытия 6 форсунок В МИЛЛИСЕКУНДАХ
 
-      current_run += diff_t / 3600000 * getOBDdata(OBD_SPD);  //Пройденное расстояние с момента включения. В КМ
-      total_run += diff_t / 3600000 * getOBDdata(OBD_SPD);    //Полное пройденное расстояние. EEPROM. В КМ
+      current_run += (float)diff_t / 3600000 * getOBDdata(OBD_SPD);  //Пройденное расстояние с момента включения. В КМ
+      total_run += (float)diff_t / 3600000 * getOBDdata(OBD_SPD);    //Полное пройденное расстояние. EEPROM. В КМ
 
       total_time += diff_t;                         //полное пройденное время в миллисекундах лимит ~49 суток. EEPROM
       current_time += diff_t;             //Время в пути в миллисекундах с момента включения
 
       total_avg_consumption = total_consumption * 100 / total_run;  //    среднее потребление за все время - Л на 100км
-      total_avg_speed = total_run / total_time * 3600000;           // средняя скорость за все время. км\ч
+      total_avg_speed = total_run / (float)total_time * 3600000;           // средняя скорость за все время. км\ч
 
-      avg_speed = (current_run / current_time * 3600000) ;       //average speed
+      avg_speed = (current_run / (float)current_time * 3600000) ;       //average speed
       avg_consumption_inj = 100 * current_consumption_inj / current_run; //average l/100km for unleaded fuel
       avg_consumption = 100 * current_consumption / current_run;
       t = millis();
@@ -246,13 +258,13 @@ void drawExtraData(void) {
   u8g.setFont(u8g_font_unifont);
   u8g.firstPage();
   do {
-    u8g.drawStr( 0, 17, "OX1" );
+    u8g.drawStr( 0, 17, "O2s" );
     u8g.setPrintPos(25, 17) ;
     u8g.print(int(getOBDdata(OBD_OXSENS)));
 
-    u8g.drawStr( 0, 32, "OX2");
-    u8g.setPrintPos(25, 32) ;
-    u8g.print( int(getOBDdata(OBD_OXSENS2)));
+    //u8g.drawStr( 0, 32, "OX2");
+    //u8g.setPrintPos(25, 32) ;
+    //u8g.print( );
 
     u8g.drawStr( 0, 47, "SEN");
     u8g.setPrintPos(25, 47) ;
@@ -583,48 +595,55 @@ void ent() {
 
 void writeHeader() {
 #ifdef LOGGING_FULL
-  file.print(F("INJ;INJ_TEST;IGN;IAC;RPM;MAP;ECT;TPS;SPD;OXSENS1;OXSENS2;ASE;COLD;DET;OXf;Re-ENRICHMENT;STARTER;IDLE;A/C;NEUTRAL;Ex1;Ex2;AVG SPD;LPK_OBD;LPH_OBD;LPH_INJ;TOTAL_OBD;TOTAL_INJ;AVG_OBD;AVG_INJ"));
+  file.print(F("INJ;INJ_TEST;IGN;IAC;RPM;MAP;ECT;TPS;SPD;OXSENS;ASE;COLD;DET;OXf;Re-ENRICHMENT;STARTER;IDLE;A/C;NEUTRAL;Ex1;Ex2;AVG SPD;LPK_OBD;LPH_OBD;LPH_INJ;TOTAL_OBD;TOTAL_INJ;AVG_OBD;AVG_INJ"));
+#else
+  file.print(F("INJ;INJ_TEST;IGN;IAC;RPM;MAP;ECT;TPS;SPD;O2SENS;AVG SPD;LPK_OBD;LPH_OBD;LPH_INJ;TOTAL_OBD;TOTAL_INJ;AVG_OBD;AVG_INJ"));
 #endif
-  file.print(F("INJ;INJ_TEST;IGN;IAC;RPM;MAP;ECT;TPS;SPD;OXSENS1;OXSENS2;AVG SPD;LPK_OBD;LPH_OBD;LPH_INJ;TOTAL_OBD;TOTAL_INJ;AVG_OBD;AVG_INJ"));
   file.println();
 }
 
 void logData() {
-  file.print(getOBDdata(OBD_INJ)); file.write(';'); file.print(float(float(INJ_TIME) / 1000)); file.write(';'); file.print(getOBDdata(OBD_IGN));  file.write(';');  file.print(getOBDdata(OBD_IAC));  file.write(';');
+  file.print(getOBDdata(OBD_INJ)); file.write(';'); file.print(float(INJ_TIME) / 1000); file.write(';'); file.print(getOBDdata(OBD_IGN));  file.write(';');  file.print(getOBDdata(OBD_IAC));  file.write(';');
   file.print(getOBDdata(OBD_RPM)); file.write(';'); file.print(getOBDdata(OBD_MAP));  file.write(';'); file.print(getOBDdata(OBD_ECT));  file.write(';');
   file.print(getOBDdata(OBD_TPS)); file.write(';');  file.print(getOBDdata(OBD_SPD));  file.write(';'); file.print(getOBDdata(OBD_OXSENS)); file.write(';');
-  file.print(getOBDdata(OBD_OXSENS2));  file.write(';');
 #ifdef LOGGING_FULL
   file.print(getOBDdata(11)); file.write(';'); file.print(getOBDdata(12)); file.write(';'); file.print(getOBDdata(13)); file.write(';'); file.print(getOBDdata(14)); file.write(';');
   file.print(getOBDdata(15)); file.write(';'); file.print(getOBDdata(16)); file.write(';'); file.print(getOBDdata(17)); file.write(';'); file.print(getOBDdata(18)); file.write(';');
   file.print(getOBDdata(19)); file.write(';'); file.print(getOBDdata(20)); file.write(';'); file.print(getOBDdata(21)); file.write(';');
 #endif
-  file.print(total_avg_speed); file.write(';');
-  file.print(100 / getOBDdata(OBD_SPD) * (getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18)); file.write(';');
-  file.print(getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18); file.write(';');
-  file.print(float(INJ_TIME)/1000 * getOBDdata(OBD_RPM)*Ls * 0.18); file.write(';');
-  file.print(total_consumption); file.write(';');
-  file.print(total_consumption_inj); file.write(';');
-  file.print(avg_consumption); file.write(';');
-  file.print(avg_consumption_inj); 
+  file.print(total_avg_speed); file.write(';');                                                                   //!AVG_SPD
+  file.print(100 / getOBDdata(OBD_SPD) * (getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18)); file.write(';');  //LPK_OBD      ok
+  file.print(getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18); file.write(';');                                //LPH_OBD    ok
+  file.print(float(INJ_TIME) / 1000 * getOBDdata(OBD_RPM)*Ls * 0.18); file.write(';');                          //LPH_INJ     ok
+  file.print(total_consumption); file.write(';');   //TOTAL_OBD     ok
+  file.print(total_consumption_inj); file.write(';'); //TOTAL_INJ   ok
+  file.print(avg_consumption); file.write(';');   //!AVG_OBD
+  file.print(avg_consumption_inj);      //!AVG_INJ
   file.println();
 
   if (!file.sync() || file.getWriteError())  error("write error");
 }
 
 void InjectorTime() { // it is called every time a change occurs at the gasoline injector signal and calculates gasoline injector opening time, during the 1sec interval
-  unsigned long InjectorTime1 = 0, InjectorTime2 = 0;
   if (digitalRead(INJECTOR_PIN) == LOW) {
     InjectorTime1 = micros();
   }
   if (digitalRead(INJECTOR_PIN) == HIGH) {
     InjectorTime2 = micros();
   }
-  if (InjectorTime2 > InjectorTime1) {
-    total_consumption_inj += (InjectorTime2 - InjectorTime1) * Lmks;      //Полный расход топлива за 1 цикл открытия форсунки. Хранится в EEPROM
-    current_consumption_inj += (InjectorTime2 - InjectorTime1) * Lmks;    //Полный расход топлива за 1 цикл открытия форсунки за поездку.
-    INJ_TIME = InjectorTime2 - InjectorTime1;
+  if (InjectorTime2 > InjectorTime1 && InjectorTime2 - InjectorTime1 > 15000) {  // Замечено что при резком сбросе оборотов всплески > 15мс=15000мкс. Вангую что это торможение двигателем и форсунки отключается. 
+    INJ_TIME = 0;     // в этом случае длительность впрыска равно нулю
+  }
+  else                                                            // в противном случае
+  {
+    Injector_Open_Duration += (InjectorTime2 - InjectorTime1);      //Суммирование времени открытия форсунки для подсчета суммарного расхода. в микросекундах.
+    INJ_TIME = InjectorTime2 - InjectorTime1;                     //длительность впрыска
   }
 }
 
-
+ISR(TIMER1_OVF_vect) { //TIMER1 overflow interrupt -- occurs every 1sec -- it holds the time (in seconds) and also prevents the overflowing of some variables
+  total_consumption_inj += Injector_Open_Duration * Lmks;    // Полный расход бензина в Литрах. Хранится в EEPROM.
+  current_consumption_inj += Injector_Open_Duration * Lmks;   // Расход бензина за поездку в литрах
+  Injector_Open_Duration = 0;
+  TCNT1 = 3036;
+}
