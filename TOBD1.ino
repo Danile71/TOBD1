@@ -11,55 +11,30 @@
 #include <EEPROM.h>
 
 #include <Bounce2.h>
-U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NONE);
-#define DEBUG_OUTPUT true // for debug option - swith output to Serial
 
 #define LOGGING_FULL    //Запись на SD всех данных
-#define FILE_BASE_NAME "Data"
-#define error(msg) sd.errorHalt(F(msg))
+#define DEBUG_OUTPUT true // for debug option - swith output to Serial
 
+//DEFINE пинов под входы-выходы
+#define LED_PIN          13
 #define ENGINE_DATA_PIN 2 //VF1 PIN
 #define TOGGLE_BTN_PIN 4 //screen change PIN
 #define INJECTOR_PIN 3 // Номер ноги для форсунки
+
+//DEFINE констант расходомера
 #define Ls 0.004 //производительсность форсунки литров в секунду
+#define Lmks 0.000000004 //производительсность форсунки литров в микросекунду
 #define Ncyl 6 //кол-во цилиндров
-volatile static float Lmks = 0.000000004;
-const uint8_t chipSelect = SS;
 
-SdFat sd;
-SdFile file;
+//DEFINE модуля записи на SD карту
+#define FILE_BASE_NAME "Data"   //шаблон имени файла
+#define error(msg) sd.errorHalt(F(msg)) //ошибки при работе с SD
 
-Bounce BTN_SCREEN = Bounce(); //создаем экземпляр класса Bounce
-byte CurrentDisplayIDX;
 
-unsigned long t;
-
-float current_consumption;
-float total_consumption;
-
-float current_run, cycle_run;
-float total_run;
-
-unsigned long current_time, cycle_time;
-unsigned long total_time;
-
-float total_avg_consumption, avg_consumption;
-float total_avg_speed, avg_speed;
-
-bool flagNulSpeed = true;
-volatile unsigned long  Injector_Open_Duration = 0, INJ_TIME;
-float used_gasoline;
-
-#define LED_PIN          13
-// I have inverted the Eng line using an Opto-Coupler, if yours isn't then reverse these low & high defines.
-#define  MY_HIGH  HIGH //LOW
+//DEFINE OBD READER
+#define  MY_HIGH  HIGH //LOW    // I have inverted the Eng line using an Opto-Coupler, if yours isn't then reverse these low & high defines.
 #define  MY_LOW   LOW //HIGH
 #define  TOYOTA_MAX_BYTES  24
-volatile uint8_t ToyotaNumBytes, ToyotaID;
-volatile uint8_t ToyotaData[TOYOTA_MAX_BYTES];
-volatile uint16_t ToyotaFailBit = 0;
-
-// "names" for the OND data to make life easier
 #define OBD_INJ 1 //Injector pulse width (INJ)
 #define OBD_IGN 2 //Ignition timing angle (IGN)
 #define OBD_IAC 3 //Idle Air Control (IAC)
@@ -69,20 +44,49 @@ volatile uint16_t ToyotaFailBit = 0;
 #define OBD_TPS 7 // Throttle Position Sensor (TPS)
 #define OBD_SPD 8 //Speed (SPD)
 #define OBD_OXSENS 9 // Лямбда 1
-#define OBD_OXSENS2 10 // Лямбда 2 tst
+#define OBD_OXSENS2 10 // Лямбда 2 
+
+
+U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NONE);
+SdFat sd;
+SdFile file;
+
+Bounce BTN_SCREEN = Bounce(); //создаем экземпляр класса Bounce
+byte CurrentDisplayIDX;
+
+float total_consumption = 0;
+float current_consumption = 0;
+float current_run = 0;
+float total_run = 0;
+float total_avg_consumption;
+float avg_consumption;
+float total_avg_consumption_inj;
+float avg_consumption_inj;
+float total_avg_speed;
+float avg_speed;
+unsigned long current_time = 0;
+unsigned long total_time = 0;
+unsigned long t;
+bool flagNulSpeed = true;
+volatile unsigned long  Injector_Open_Duration = 0;
+volatile unsigned long INJ_TIME;
+volatile float total_consumption_inj, current_consumption_inj;
+volatile uint8_t ToyotaNumBytes, ToyotaID, ToyotaData[TOYOTA_MAX_BYTES];
+volatile uint16_t ToyotaFailBit = 0;
+
+// "names" for the OBD data to make life easier
 boolean OBDConnected; // dfeine connection flag and last success packet - for lost connection function.
 unsigned long OBDLastSuccessPacket;
 
 
 void setup() {
-  //float f = 0.00f;
   char fileName[13] = FILE_BASE_NAME "00.csv";
   const uint8_t BASE_NAME_SIZE = sizeof(FILE_BASE_NAME) - 1;
   Serial.begin(115200);
   if (DEBUG_OUTPUT) {
     Serial.println("system Started");
   }
-  if (!sd.begin(chipSelect, SD_SCK_MHZ(50))) {
+  if (!sd.begin(SS, SD_SCK_MHZ(50))) {
     sd.initErrorHalt();
   }
   while (sd.exists(fileName)) {
@@ -104,13 +108,6 @@ void setup() {
   //displayNoConnection(); // Display no connection
 
   noInterrupts();
-  // set and initialize the TIMER1
-  TCCR1A = 0; // set entire TCCR1A register to 0
-  TCCR1B = 0; // set entire TCCR1B register to 0
-  TCCR1B |= (1 << CS12);//prescaler 256 --> Increment time = 256/16.000.000= 16us
-  TIMSK1 |= (1 << TOIE1); // enable Timer1 overflow interrupt
-  TCNT1 = 3036; // counter initial value so as to overflow every 1sec: 65536 - 3036 = 62500 * 16us = 1sec (65536 maximum value of the timer)
-
   pinMode(ENGINE_DATA_PIN, INPUT); // VF1 PIN
   pinMode(INJECTOR_PIN, INPUT); // Injector PIN
   pinMode(LED_PIN, OUTPUT);
@@ -127,7 +124,7 @@ void setup() {
   //Расходомер
   EEPROM.get(104, total_run);
   EEPROM.get(108, total_time);
-  EEPROM.get(200, used_gasoline);
+  EEPROM.get(200, total_consumption_inj);
   EEPROM.get(204, total_consumption);
   t = millis();
   interrupts();
@@ -147,29 +144,26 @@ void loop(void) {
     new_t = millis();
     if (new_t > t) {
       diff_t = new_t - t;
-      //current_duration = getOBDdata(OBD_RPM) / 60 / 2 * 6 * diff_t / 1000 * getOBDdata(OBD_INJ); // Время открытия 6 форсунок за текущий такт ОБД данных (в миллисекундах) с текущими оборотами
-      current_consumption = getOBDdata(OBD_RPM) / 60 / 2 * Ncyl * diff_t / 1000 * getOBDdata(OBD_INJ) / 1000 * Ls; // Потребление 6 форсунок за текущий такт ОБД данных (в литрах) с текущими оборотами
-      total_consumption += current_consumption;
+      current_consumption = getOBDdata(OBD_RPM) / 60 / 2 * Ncyl * diff_t / 1000 * getOBDdata(OBD_INJ) / 1000 * Ls; // Потребление 6 форсунок за текущий такт ОБД данных (в литрах) с текущими оборотами c момента включения
+      total_consumption += current_consumption;         //потребление бензина за все время в литрах. EEPROM
       //ОБ/М           ОБ/С
       //форсунка срабатывает раз в 2 оборота КВ
       //6форсунок в с
       //время цикла мс в с. Получаем кол-во срабатываний за время цикла. Умножаем на время открытия форсунки, получаем время открытия 6 форсунок В МИЛЛИСЕКУНДАХ
-      //total_duration += current_duration; //Суммарное время, когда форсунка была открыта. EEPROM В МИЛЛИСЕКУНДАХ
-      //total_consumption = total_duration / 1000 * Ls; // Суммарный расход бензина по суммарному времени открытия форсунок. EEPROM. В ЛИТРАХ
 
-      cycle_run = diff_t / 3600000 * getOBDdata(OBD_SPD); // Пройденное расстояние за текущий такт ОБД данных. В КМ
-      total_run += cycle_run;                                 //Полное пройденное расстояние. EEPROM. В КМ
-      current_run += cycle_run;                           //Пройденное расстояние с момента включения. В КМ
+      current_run += diff_t / 3600000 * getOBDdata(OBD_SPD);  //Пройденное расстояние с момента включения. В КМ
+      total_run += diff_t / 3600000 * getOBDdata(OBD_SPD);    //Полное пройденное расстояние. EEPROM. В КМ
 
-      cycle_time = diff_t;                              // текущее время цикла (миллисекунды)
-      total_time += cycle_time;                              //полное пройденное время в миллисекундах лимит ~49 суток. EEPROM
-      current_time += cycle_time / 3600000;             //Время в пути с момента включения в ЧАСАХ.
+      total_time += diff_t;                         //полное пройденное время в миллисекундах лимит ~49 суток. EEPROM
+      current_time += diff_t;             //Время в пути в миллисекундах с момента включения
 
       total_avg_consumption = total_consumption * 100 / total_run;  //    среднее потребление за все время - Л на 100км
       total_avg_speed = total_run / total_time * 3600000;           // средняя скорость за все время. км\ч
 
+      avg_speed = (current_run / current_time * 3600000) ;       //average speed
+      avg_consumption_inj = 100 * current_consumption_inj / current_run; //average l/100km for unleaded fuel
+      avg_consumption = 100 * current_consumption / current_run;
       t = millis();
-
     }
     drawScreenSelector(); // draw screen
     logData();
@@ -178,23 +172,16 @@ void loop(void) {
     ToyotaNumBytes = 0;     // reset the counter.
   } // end if (ToyotaNumBytes > 0)
 
-  if (millis() % 5000 < 50)
-  {
-    avg_speed = (current_run / current_time) ;        //average speed
-    avg_consumption = 100 * used_gasoline / current_run; //average l/100km for unleaded fuel
-
-  }
   /*
     if (OBDLastSuccessPacket + 3500 < millis() && OBDConnected) {   //check for lost connection
       displayNoConnection();  // show no connection
       OBDConnected = false;  // set OBDConnected to false.
     } // end if loas conntcion
   */
-  Serial.println("qq");
   if (getOBDdata(OBD_SPD) == 0 && flagNulSpeed == false)  {
     EEPROM.put(104, total_run);
     EEPROM.put(108, total_time);
-    EEPROM.put(200, used_gasoline);
+    EEPROM.put(200, total_consumption_inj);
     EEPROM.put(204, total_consumption);
     flagNulSpeed = true;
   }
@@ -215,7 +202,7 @@ void drawFuelConsuption(void) {
   do {
     u8g.drawStr( 0, 17, "Ft1" );
     u8g.setPrintPos(25, 17) ;
-    u8g.print(used_gasoline, 1);
+    u8g.print(total_consumption_inj, 1);
 
     //u8g.drawStr( 0, 17, "SPD" );
     //u8g.setPrintPos(25, 17) ;
@@ -596,9 +583,9 @@ void ent() {
 
 void writeHeader() {
 #ifdef LOGGING_FULL
-  file.print(F("INJ;INJ_TEST;IGN;IAC;RPM;MAP;ECT;TPS;SPD;OXSENS1;OXSENS2;ASE;COLD;DET;OXf;Re-ENRICHMENT;STARTER;IDLE;A/C;NEUTRAL;Ex1;Ex2;AVG CONSUMPTION;AVG SPEED;LPK;LPH;USED_OBD;USED_FORS"));
+  file.print(F("INJ;INJ_TEST;IGN;IAC;RPM;MAP;ECT;TPS;SPD;OXSENS1;OXSENS2;ASE;COLD;DET;OXf;Re-ENRICHMENT;STARTER;IDLE;A/C;NEUTRAL;Ex1;Ex2;AVG SPD;LPK_OBD;LPH_OBD;LPH_INJ;TOTAL_OBD;TOTAL_INJ;AVG_OBD;AVG_INJ"));
 #endif
-  file.print(F("INJ;INJ_TEST;IGN;IAC;RPM;MAP;ECT;TPS;SPD;OXSENS1;OXSENS2;AVG CONSUMPTION;AVG SPEED;LPK;LPH;USED_OBD;USED_FORS"));
+  file.print(F("INJ;INJ_TEST;IGN;IAC;RPM;MAP;ECT;TPS;SPD;OXSENS1;OXSENS2;AVG SPD;LPK_OBD;LPH_OBD;LPH_INJ;TOTAL_OBD;TOTAL_INJ;AVG_OBD;AVG_INJ"));
   file.println();
 }
 
@@ -612,13 +599,14 @@ void logData() {
   file.print(getOBDdata(15)); file.write(';'); file.print(getOBDdata(16)); file.write(';'); file.print(getOBDdata(17)); file.write(';'); file.print(getOBDdata(18)); file.write(';');
   file.print(getOBDdata(19)); file.write(';'); file.print(getOBDdata(20)); file.write(';'); file.print(getOBDdata(21)); file.write(';');
 #endif
-  file.print(total_avg_consumption); file.write(';');
   file.print(total_avg_speed); file.write(';');
   file.print(100 / getOBDdata(OBD_SPD) * (getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18)); file.write(';');
   file.print(getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18); file.write(';');
+  file.print(float(INJ_TIME)/1000 * getOBDdata(OBD_RPM)*Ls * 0.18); file.write(';');
   file.print(total_consumption); file.write(';');
-  file.print(used_gasoline);
-
+  file.print(total_consumption_inj); file.write(';');
+  file.print(avg_consumption); file.write(';');
+  file.print(avg_consumption_inj); 
   file.println();
 
   if (!file.sync() || file.getWriteError())  error("write error");
@@ -633,13 +621,10 @@ void InjectorTime() { // it is called every time a change occurs at the gasoline
     InjectorTime2 = micros();
   }
   if (InjectorTime2 > InjectorTime1) {
-    Injector_Open_Duration += (InjectorTime2 - InjectorTime1); //total useconds that the gasoline injector opens throughout 1sec
+    total_consumption_inj += (InjectorTime2 - InjectorTime1) * Lmks;      //Полный расход топлива за 1 цикл открытия форсунки. Хранится в EEPROM
+    current_consumption_inj += (InjectorTime2 - InjectorTime1) * Lmks;    //Полный расход топлива за 1 цикл открытия форсунки за поездку.
     INJ_TIME = InjectorTime2 - InjectorTime1;
   }
 }
 
-ISR(TIMER1_OVF_vect) { //TIMER1 overflow interrupt -- occurs every 1sec -- it holds the time (in seconds) and also prevents the overflowing of some variables
-  used_gasoline += Injector_Open_Duration * Lmks;
-  Injector_Open_Duration = 0;
-  TCNT1 = 3036;
-}
+
