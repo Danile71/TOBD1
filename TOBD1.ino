@@ -1,6 +1,3 @@
-
-
-
 // ToyotaOBD1_Reader
 // In order to read the data from the OBD connector, short E1 + TE2. then to read the data connect to VF1.
 // Note the data line output is 12V - connecting it directly to one of the arduino pins might damage (proabably) the board
@@ -12,8 +9,7 @@
 #include "SdFat.h"
 #include <SPI.h>
 #include <EEPROM.h>
-
-#include <Bounce2.h>
+#include <MD_KeySwitch.h>
 
 //#define LOGGING_FULL    //Запись на SD всех данных
 #define DEBUG_OUTPUT true // for debug option - swith output to Serial
@@ -23,16 +19,15 @@
 #define ENGINE_DATA_PIN 2 //VF1 PIN
 #define TOGGLE_BTN_PIN 4 //screen change PIN
 #define INJECTOR_PIN 3 // Номер ноги для форсунки
+#define SS 5 // Номер ноги SS экрана
 
 //DEFINE констант расходомера
 #define Ls 0.004 //производительсность форсунки литров в секунду
-#define Lmks 0.000000004 //производительсность форсунки литров в микросекунду
 #define Ncyl 6 //кол-во цилиндров
 
 //DEFINE модуля записи на SD карту
 #define FILE_BASE_NAME "Data"   //шаблон имени файла
 #define error(msg) sd.errorHalt(F(msg)) //ошибки при работе с SD
-
 
 //DEFINE OBD READER
 #define  MY_HIGH  HIGH //LOW    // I have inverted the Eng line using an Opto-Coupler, if yours isn't then reverse these low & high defines.
@@ -47,7 +42,7 @@
 #define OBD_TPS 7 // Throttle Position Sensor (TPS)
 #define OBD_SPD 8 //Speed (SPD)
 #define OBD_OXSENS 9 // Лямбда 1
-#define OBD_OXSENS2 10 // Лямбда 2 
+//#define OBD_OXSENS2 10 // Лямбда 2 на V-образных движка. У меня ее нету.
 
 
 U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NONE);
@@ -55,16 +50,14 @@ U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NONE);
 SdFat sd;
 SdFile file;
 
-Bounce BTN_SCREEN = Bounce(); //создаем экземпляр класса Bounce
+MD_KeySwitch S(TOGGLE_BTN_PIN, HIGH);
 byte CurrentDisplayIDX = 1;
 
 float total_consumption_obd_ee = 0, current_consumption_obd = 0;
-float current_consumption = 0;
 float current_run = 0;
 float total_run = 0;
 float total_avg_consumption;
 float avg_consumption_obd;
-float total_avg_consumption_inj;
 float avg_consumption_inj;
 float total_avg_speed;
 float avg_speed;
@@ -87,8 +80,7 @@ volatile uint8_t ToyotaNumBytes, ToyotaID, ToyotaData[TOYOTA_MAX_BYTES];
 volatile uint16_t ToyotaFailBit = 0;
 
 // "names" for the OBD data to make life easier
-boolean OBDConnected, LoggingOn = false; // dfeine connection flag and last success packet - for lost connection function.
-unsigned long OBDLastSuccessPacket;
+boolean LoggingOn = false; // dfeine connection flag and last success packet - for lost connection function.
 
 
 void setup() {
@@ -101,6 +93,13 @@ void setup() {
   EEPROM.get(200, total_duration_inj);
   EEPROM.get(204, total_obd_inj_dur_ee);
 
+  S.begin();
+  S.enableDoublePress(true);
+  S.enableLongPress(true);
+  S.enableRepeat(false);
+  S.enableRepeatResult(false);
+  S.setDoublePressTime(300);
+  S.setLongPressTime(2000);
 
   if (DEBUG_OUTPUT) {
     Serial.println("system Started");
@@ -110,7 +109,6 @@ void setup() {
     Serial.println(total_duration_inj, 3);
     Serial.println(total_obd_inj_dur_ee, 3);
   }
-
 
   if (!sd.begin(SS, SD_SCK_MHZ(50))) {
     sd.initErrorHalt();
@@ -131,16 +129,12 @@ void setup() {
     error("file.open");
   }
   writeHeader();
-  //displayNoConnection(); // Display no connection
-
-  // set and initialize the TIMER1
+    // set and initialize the TIMER1
   TCCR1A = 0; // set entire TCCR1A register to 0
   TCCR1B = 0; // set entire TCCR1B register to 0
   TCCR1B |= (1 << CS12);//prescaler 256 --> Increment time = 256/16.000.000= 16us
   TIMSK1 |= (1 << TOIE1); // enable Timer1 overflow interrupt
   TCNT1 = 3036; // counter initial value so as to overflow every 1sec: 65536 - 3036 = 62500 * 16us = 1sec (65536 maximum value of the timer)
-
-
 
   pinMode(ENGINE_DATA_PIN, INPUT); // VF1 PIN
   pinMode(INJECTOR_PIN, INPUT); // Injector PIN
@@ -149,11 +143,7 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(INJECTOR_PIN), InjectorTime, CHANGE); //setup Interrupt for data line
 
   pinMode(TOGGLE_BTN_PIN, INPUT);           // кнопка СЛЕД. ЭКРАН
-  BTN_SCREEN.attach(TOGGLE_BTN_PIN); // устанавливаем кнопку
-  BTN_SCREEN.interval(5); // устанавливаем параметр stable interval = 50 мс
 
-  // Set OBD to not connected
-  OBDConnected = false;
   CurrentDisplayIDX = 1; // set to display 1
   drawScreenSelector();
   //Расходомер
@@ -164,7 +154,6 @@ void setup() {
   t = millis();
   interrupts();
   delay(10);
-  //Расходомер
 } // END VOID SETUP
 
 
@@ -174,32 +163,38 @@ void setup() {
 void loop(void) {
   unsigned long new_t;
   unsigned int diff_t;
+  switch (S.read())
+  {
+    case MD_KeySwitch::KS_PRESS:    ent(); break;
+    case MD_KeySwitch::KS_DPRESS:   {
+        if (LoggingOn == false) LoggingOn = true; else LoggingOn = false;
+      } break;
+    case MD_KeySwitch::KS_LONGPRESS: cleardata(); break;
+  }
+
+
+
   if (ToyotaNumBytes > 0)  {    // if found bytes
     new_t = millis();
     if (new_t > t) {
       diff_t = new_t - t;
       curr_obd_inj_dur = getOBDdata(OBD_RPM) / 60 / 2 * Ncyl * (float)diff_t / 1000 * getOBDdata(OBD_INJ); //Время открытых форсунок за 1 такт данных. В МС
+      //ОБ/М           ОБ/С
+      //форсунка срабатывает раз в 2 оборота КВ
+      //6форсунок в с
+      //время цикла мс в с. Получаем кол-во срабатываний за время цикла. Умножаем на время открытия форсунки, получаем время открытия 6 форсунок В МИЛЛИСЕКУНДАХ
+
       total_obd_inj_dur += curr_obd_inj_dur;                                                              //Время открытых форсунок за поездку        В МС
       total_obd_inj_dur_ee += curr_obd_inj_dur;                                                           //Время открытых форсунок за все время. EEPROM    В МС
 
       total_consumption_obd_ee = total_obd_inj_dur_ee / 1000 * Ls;
       current_consumption_obd = total_obd_inj_dur / 1000 * Ls;
 
-      // current_consumption = getOBDdata(OBD_RPM) / 60 / 2 * Ncyl * (float)diff_t / 1000 * getOBDdata(OBD_INJ) / 1000 * Ls; // Потребление 6 форсунок за текущий такт ОБД данных (в литрах) с текущими оборотами c момента включения
-      //     total_consumption_ee += current_consumption;         //потребление бензина за все время в литрах. EEPROM
-      //   total_consumption += current_consumption;             //потребление бензина за все время в литрах для среднего за поездку
-      //ОБ/М           ОБ/С
-      //форсунка срабатывает раз в 2 оборота КВ
-      //6форсунок в с
-      //время цикла мс в с. Получаем кол-во срабатываний за время цикла. Умножаем на время открытия форсунки, получаем время открытия 6 форсунок В МИЛЛИСЕКУНДАХ
-
       current_run += (float)diff_t / 3600000 * getOBDdata(OBD_SPD);  //Пройденное расстояние с момента включения. В КМ
       total_run += (float)diff_t / 3600000 * getOBDdata(OBD_SPD);    //Полное пройденное расстояние. EEPROM. В КМ
 
       total_time += diff_t;                         //полное пройденное время в миллисекундах лимит ~49 суток. EEPROM
       current_time += diff_t;             //Время в пути в миллисекундах с момента включения
-
-
 
       total_avg_speed = total_run / (float)total_time * 3600000;           // средняя скорость за все время. км\ч
       avg_speed = current_run / (float)current_time * 3600000 ;       //average speed
@@ -208,43 +203,26 @@ void loop(void) {
 
       avg_consumption_inj = 100 * current_consumption_inj / current_run; //average l/100km for unleaded fuel     //вроде норм
       avg_consumption_obd = 100 * current_consumption_obd / current_run;                                                   //завышает
-
       t = millis();
-
     }
     drawScreenSelector(); // draw screen
-    OBDLastSuccessPacket = millis(); // set last success
-    OBDConnected = true; // set connected to true
     ToyotaNumBytes = 0;     // reset the counter.
   } // end if (ToyotaNumBytes > 0)
 
-  /*
-    if (OBDLastSuccessPacket + 3500 < millis() && OBDConnected) {   //check for lost connection
-      displayNoConnection();  // show no connection
-      OBDConnected = false;  // set OBDConnected to false.
-    } // end if loas conntcion
-  */
-  if (getOBDdata(OBD_SPD) == 0 && flagNulSpeed == false)  {
+  if (getOBDdata(OBD_SPD) == 0 && flagNulSpeed == false)  {   //Запись данных в еепром когда остановка авто
     EEPROM.put(104, total_run);
     EEPROM.put(108, total_time);
     EEPROM.put(200, total_duration_inj);
     EEPROM.put(204, total_obd_inj_dur_ee);
-    flagNulSpeed = true;
+    flagNulSpeed = true;                                  //запрет повторной записи
   }
-  if (getOBDdata(OBD_SPD) != 0) flagNulSpeed = false;
-  if (millis() % 500 < 50) logData();
-  if (millis() % 5000 < 50) autoscreenchange();
-  
-  ent();
-  if (digitalRead(TOGGLE_BTN_PIN) == HIGH) {
-    CurrentDisplayIDX++;
-    if (CurrentDisplayIDX > 3) CurrentDisplayIDX = 1;
-    drawScreenSelector();
+  if (getOBDdata(OBD_SPD) != 0) flagNulSpeed = false;     //начали двигаться - разрешаем запись
+  if (millis() % 500 < 50 && LoggingOn == true) {         //каждую 0.5с запись в лог данных по двоному нажатию на кнопку
+    logData();
   }
+  //  if (millis() % 5000 < 50) autoscreenchange();      // ротация экранов
+} 
 
-
-
-} // end void loop
 void writeHeader() {
 #ifdef LOGGING_FULL
   file.print(F("INJ_OBD;INJ_HW;IGN;IAC;RPM;MAP;ECT;TPS;SPD;OXSENS;ASE;COLD;DET;OXf;Re-ENRICHMENT;STARTER;IDLE;A/C;NEUTRAL;Ex1;Ex2;AVG SPD;LPK_OBD;LPH_OBD;LPH_INJ;TOTAL_OBD;TOTAL_INJ;AVG_OBD;AVG_INJ"));
@@ -252,6 +230,22 @@ void writeHeader() {
   file.print(F("INJ_OND;INJ_HW;IGN;IAC;RPM;MAP;ECT;TPS;SPD;O2SENS;AVG SPD;LPK_OBD;LPH_OBD;LPH_INJ;TOTAL_OBD;TOTAL_INJ;AVG_OBD;AVG_INJ;CURR_OBD;CURR_INJ;CURR_RUN;RUN_TOTAL"));
 #endif
   file.println();
+  if (!file.sync() || file.getWriteError())  error("write error");
+}
+
+//обнуление данных
+void cleardata() {
+  int i;
+  for (i = 104; i <= 112; i++) {
+    EEPROM.update(i, 0);
+  }
+  for (i = 200; i <= 212; i++) {
+    EEPROM.update(i, 0);
+  }
+  EEPROM.get(104, total_run);
+  EEPROM.get(108, total_time);
+  EEPROM.get(200, total_duration_inj);
+  EEPROM.get(204, total_obd_inj_dur_ee);
 }
 
 void logData() {
@@ -271,9 +265,6 @@ void logData() {
   file.print(total_consumption_obd_ee); file.write(';');   //TOTAL_OBD     ok
   file.print(total_consumption_inj); file.write(';'); //TOTAL_INJ   ok
 
-  //file.print(total_obd_inj_dur / 1000 * Ls); file.write(';');  //TOTAL_OBD     ok
-  //file.print(total_duration_inj / 1000 * Ls); file.write(';'); //TOTAL_INJ   ok
-
   file.print(avg_consumption_obd); file.write(';');   //!AVG_OBD
   file.print(avg_consumption_inj);  file.write(';');     //!AVG_INJ
 
@@ -283,12 +274,10 @@ void logData() {
   file.print(current_run);   file.write(';');    //CURR_RUN ok
   file.print(total_run); //RUN_TOTAL      ok
   file.println();
-  //if (LoggingOn == true) file.sync();
   if (!file.sync() || file.getWriteError())  error("write error");
 }
 
 void InjectorTime() { // it is called every time a change occurs at the gasoline injector signal and calculates gasoline injector opening time, during the 1sec interval
-  // INJ_TIME = 0;
   if (digitalRead(INJECTOR_PIN) == LOW) {
     InjectorTime1 = micros();
   }
@@ -312,9 +301,8 @@ ISR(TIMER1_OVF_vect) { //TIMER1 overflow interrupt -- occurs every 1sec -- it ho
 
 void drawScreenSelector(void) {
   if (CurrentDisplayIDX == 1) drawFuelConsuption();
-  //  else if (CurrentDisplayIDX == 2) drawExtraData();
-  else if (CurrentDisplayIDX == 2) drawAllData();
-  else if (CurrentDisplayIDX == 3) drawTimeDistance();
+  else if (CurrentDisplayIDX == 2) drawTimeDistance();
+  else if (CurrentDisplayIDX == 3) drawAllData();
 } // end drawScreenSelector()
 
 void drawFuelConsuption(void) {
@@ -416,42 +404,18 @@ void drawAllData(void) {
   } while ( u8g.nextPage() ); // end picture loop
 } // end void drawalldata
 
-void displayNoConnection() {
-  u8g.setFont(u8g_font_profont15r);
-  u8g.setFontRefHeightExtendedText();
-  //u8g.setDefaultForegroundColor();
-  u8g.setFontPosTop();
-  // picture loop
-  u8g.firstPage();
-  do {
-    // draw box
-    u8g.drawRFrame(0, 0, 127, 63, 7);
-    u8g.drawStr(15, 25, "NO SIGNAL");
-  } while ( u8g.nextPage() );
-
-} // end void
-
 void autoscreenchange() {
+  CurrentDisplayIDX++;
+  if (CurrentDisplayIDX > 2) CurrentDisplayIDX = 1;
+  drawScreenSelector();
+}
+void ent() {//ПЕРЕКЛЮЧЕНИЕ ЭКРАНОВ
   CurrentDisplayIDX++;
   if (CurrentDisplayIDX > 3) CurrentDisplayIDX = 1;
   drawScreenSelector();
 }
 
-void ent() {
-  LoggingOn = false;
-  //ПЕРЕКЛЮЧЕНИЕ ЭКРАНОВ
-  if (BTN_SCREEN.update())
-  {
-
-    if (BTN_SCREEN.read() == HIGH) //если отпускаем
-      CurrentDisplayIDX++;
-    if (CurrentDisplayIDX > 3) CurrentDisplayIDX = 1;
-    drawScreenSelector();
-  }
-  LoggingOn = true;
-}
 float getOBDdata(byte OBDdataIDX) {
-  // define return value
   float returnValue;
   switch (OBDdataIDX) {
     case 0:// UNKNOWN
@@ -521,15 +485,15 @@ float getOBDdata(byte OBDdataIDX) {
     case OBD_SPD: // Скорость автомобиля (км/час)
       returnValue = ToyotaData[OBD_SPD];
       break;
-
     //  Коррекция для рядных/ коррекция первой половины
     case OBD_OXSENS:
       returnValue = (float)ToyotaData[OBD_OXSENS] * 0.01953125;
       break;
     //Коррекция второй половины
-    case OBD_OXSENS2:// Lambda2 tst
+    /*
+      case OBD_OXSENS2:// Lambda2 tst
       returnValue = (float)ToyotaData[OBD_OXSENS2] * 0.01953125;
-      break;
+      break;*/
     //  читаем Байты флагов побитно
     case 11:
       returnValue = bitRead(ToyotaData[11], 0);  //  Переобогащение после запуска 1-Вкл
@@ -605,29 +569,23 @@ void ChangeState() {
         uint16_t bitpos = (BitCount - 4) % 11;
         uint16_t bytepos = (BitCount - 4) / 11;
         if (bitpos == 0)      {
-
           // Start bit, should be LOW
           if ((BitCount > 4) && (state != MY_HIGH))  { // inverse state as we are detecting the change!
             ToyotaFailBit = BitCount;
             InPacket = false;
             break;
           } // end if ((BitCount > 4) && (state != MY_HIGH))
-
         }  else if (bitpos < 9)  { //else TO  if (bitpos == 0)
-
           EData[bytepos] >>= 1;
           if (state == MY_LOW)  // inverse state as we are detecting the change!
             EData[bytepos] |= 0x80;
-
         } else { // else if (bitpos == 0)
-
           // Stop bits, should be HIGH
           if (state != MY_LOW)  { // inverse state as we are detecting the change!
             ToyotaFailBit = BitCount;
             InPacket = false;
             break;
           } // end if (state != MY_LOW)
-
           if ( (bitpos == 10) && ((bits > 1) || (bytepos == (TOYOTA_MAX_BYTES - 1))) ) {
             ToyotaNumBytes = 0;
             ToyotaID = ID;
@@ -649,11 +607,6 @@ void ChangeState() {
     } // end while
   } // end (InPacket == false)
 } // end void change
-
-
-
-
-
 
 /*
   void drawExtraData(void) {
