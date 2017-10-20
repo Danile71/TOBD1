@@ -1,3 +1,6 @@
+
+
+
 // ToyotaOBD1_Reader
 // In order to read the data from the OBD connector, short E1 + TE2. then to read the data connect to VF1.
 // Note the data line output is 12V - connecting it directly to one of the arduino pins might damage (proabably) the board
@@ -48,6 +51,7 @@
 
 
 U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NONE);
+
 SdFat sd;
 SdFile file;
 
@@ -92,9 +96,22 @@ void setup() {
   const uint8_t BASE_NAME_SIZE = sizeof(FILE_BASE_NAME) - 1;
   noInterrupts();
   Serial.begin(115200);
+  EEPROM.get(104, total_run);
+  EEPROM.get(108, total_time);
+  EEPROM.get(200, total_duration_inj);
+  EEPROM.get(204, total_obd_inj_dur_ee);
+
+
   if (DEBUG_OUTPUT) {
     Serial.println("system Started");
+    Serial.print("Read float from EEPROM: ");
+    Serial.println(total_run, 3);
+    Serial.println(total_time, 3);
+    Serial.println(total_duration_inj, 3);
+    Serial.println(total_obd_inj_dur_ee, 3);
   }
+
+
   if (!sd.begin(SS, SD_SCK_MHZ(50))) {
     sd.initErrorHalt();
   }
@@ -133,7 +150,7 @@ void setup() {
 
   pinMode(TOGGLE_BTN_PIN, INPUT);           // кнопка СЛЕД. ЭКРАН
   BTN_SCREEN.attach(TOGGLE_BTN_PIN); // устанавливаем кнопку
-  BTN_SCREEN.interval(50); // устанавливаем параметр stable interval = 50 мс
+  BTN_SCREEN.interval(5); // устанавливаем параметр stable interval = 50 мс
 
   // Set OBD to not connected
   OBDConnected = false;
@@ -165,7 +182,7 @@ void loop(void) {
       total_obd_inj_dur += curr_obd_inj_dur;                                                              //Время открытых форсунок за поездку        В МС
       total_obd_inj_dur_ee += curr_obd_inj_dur;                                                           //Время открытых форсунок за все время. EEPROM    В МС
 
-      total_consumption_obd_ee = total_obd_inj_dur / 1000 * Ls;
+      total_consumption_obd_ee = total_obd_inj_dur_ee / 1000 * Ls;
       current_consumption_obd = total_obd_inj_dur / 1000 * Ls;
 
       // current_consumption = getOBDdata(OBD_RPM) / 60 / 2 * Ncyl * (float)diff_t / 1000 * getOBDdata(OBD_INJ) / 1000 * Ls; // Потребление 6 форсунок за текущий такт ОБД данных (в литрах) с текущими оборотами c момента включения
@@ -193,6 +210,7 @@ void loop(void) {
       avg_consumption_obd = 100 * current_consumption_obd / current_run;                                                   //завышает
 
       t = millis();
+
     }
     drawScreenSelector(); // draw screen
     OBDLastSuccessPacket = millis(); // set last success
@@ -214,8 +232,18 @@ void loop(void) {
     flagNulSpeed = true;
   }
   if (getOBDdata(OBD_SPD) != 0) flagNulSpeed = false;
-  if (millis() % 250 < 50) logData();
+  if (millis() % 500 < 50) logData();
+  if (millis() % 5000 < 50) autoscreenchange();
+  
   ent();
+  if (digitalRead(TOGGLE_BTN_PIN) == HIGH) {
+    CurrentDisplayIDX++;
+    if (CurrentDisplayIDX > 3) CurrentDisplayIDX = 1;
+    drawScreenSelector();
+  }
+
+
+
 } // end void loop
 void writeHeader() {
 #ifdef LOGGING_FULL
@@ -255,8 +283,8 @@ void logData() {
   file.print(current_run);   file.write(';');    //CURR_RUN ok
   file.print(total_run); //RUN_TOTAL      ok
   file.println();
-  if (LoggingOn == true) file.sync();
-  //if (LoggingOn==true)  if (!file.sync() || file.getWriteError())  error("write error");
+  //if (LoggingOn == true) file.sync();
+  if (!file.sync() || file.getWriteError())  error("write error");
 }
 
 void InjectorTime() { // it is called every time a change occurs at the gasoline injector signal and calculates gasoline injector opening time, during the 1sec interval
@@ -268,7 +296,7 @@ void InjectorTime() { // it is called every time a change occurs at the gasoline
     InjectorTime2 = micros();
   }
   if ((InjectorTime2 - InjectorTime1) > 500 && (InjectorTime2 - InjectorTime1) < 15000) {  // Замечено что при резком сбросе оборотов всплески > 15мс=15000мкс. Вангую что это торможение двигателем и форсунки отключается.
-    Injector_Open_Duration += (InjectorTime2 - InjectorTime1)*Ncyl;      //Суммирование времени открытия Ncyl форсунок для подсчета суммарного расхода. в микросекундах.
+    Injector_Open_Duration += (InjectorTime2 - InjectorTime1) * Ncyl;    //Суммирование времени открытия Ncyl форсунок для подсчета суммарного расхода. в микросекундах.
     INJ_TIME = InjectorTime2 - InjectorTime1;                          //длительность впрыска
   }
 }
@@ -284,131 +312,72 @@ ISR(TIMER1_OVF_vect) { //TIMER1 overflow interrupt -- occurs every 1sec -- it ho
 
 void drawScreenSelector(void) {
   if (CurrentDisplayIDX == 1) drawFuelConsuption();
-  else if (CurrentDisplayIDX == 2) drawExtraData();
-  else if (CurrentDisplayIDX == 3) drawAllData();
-  else if (CurrentDisplayIDX == 4) drawExtraFlags();
+  //  else if (CurrentDisplayIDX == 2) drawExtraData();
+  else if (CurrentDisplayIDX == 2) drawAllData();
+  else if (CurrentDisplayIDX == 3) drawTimeDistance();
 } // end drawScreenSelector()
 
 void drawFuelConsuption(void) {
-  u8g.setFont(u8g_font_unifont);
+  u8g.setFont(u8g_font_profont15r);
   u8g.firstPage();
   do {
-    u8g.drawStr( 0, 17, "Ft1" );
-    u8g.setPrintPos(25, 17) ;
-    u8g.print(total_consumption_obd_ee);
-    //u8g.drawStr( 0, 17, "SPD" );
-    //u8g.setPrintPos(25, 17) ;
-    //u8g.print(total_avg_speed, 2);
-    
-    u8g.drawStr( 0, 32, "Ft2");
-    u8g.setPrintPos(25, 32) ;
-    u8g.print(total_consumption_inj);
-
-    u8g.drawStr( 0, 47, "KMt");
-    u8g.setPrintPos(25, 47) ;
-    u8g.print(total_run);
-
-    u8g.drawStr( 0, 62, "Mto");
-    u8g.setPrintPos(25, 62) ;
-    u8g.print(float(total_time) / 60000, 1);
-
-    u8g.drawStr( 65, 17, "LPH" );
-    u8g.setPrintPos(92, 17) ;
-    u8g.print( getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18);
-
-
-    u8g.drawStr( 65, 32, "LPK");
-    u8g.setPrintPos(92, 32) ;
-    u8g.print(100 / getOBDdata(OBD_SPD) * (getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18) );
-
-    u8g.drawStr( 65, 47, "AV1");
-    u8g.setPrintPos(92, 47) ;
-    u8g.print(avg_consumption_obd, 1);
-
-    u8g.drawStr( 65, 62, "AV2");
-    u8g.setPrintPos(92, 62) ;
-    u8g.print(avg_consumption_inj, 1);
-
-    u8g.drawVLine(63, 0, 64);
+    u8g.setFont(u8g_font_profont15r);
+    u8g.drawStr( 0, 15, "TOTAL" );
+    u8g.drawStr( 90, 15, "L" );
+    u8g.setPrintPos(44, 15) ;
+    u8g.print(total_consumption_inj, 1);
+    if (getOBDdata(OBD_SPD) > 0)
+    {
+      u8g.setFont(u8g_font_profont15r);
+      u8g.drawStr( 0, 42, "L/Hour" );
+      u8g.setFont(u8g_font_profont22r);
+      u8g.setPrintPos(0, 60) ;
+      u8g.print(getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18);
+    } else {
+      u8g.setFont(u8g_font_profont15r);
+      u8g.drawStr( 0, 42, "L/100Km" );
+      u8g.setFont(u8g_font_profont22r);
+      u8g.setPrintPos(0, 60) ;
+      u8g.print( 100 / getOBDdata(OBD_SPD) * (getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18));
+    }
+    u8g.setFont(u8g_font_profont15r);
+    u8g.drawStr( 60, 42, "Average" );
+    u8g.setFont(u8g_font_profont22r);
+    u8g.setPrintPos(60, 60) ;
+    if (avg_consumption_inj < 100)
+      u8g.print( avg_consumption_inj, 1);
+    else u8g.drawStr( 60, 60, "---" );
   }
   while ( u8g.nextPage() );
 }
-
-void drawExtraData(void) {
-  u8g.setFont(u8g_font_unifont);
+void drawTimeDistance(void) {
+  u8g.setFont(u8g_font_profont15r);
   u8g.firstPage();
   do {
-    u8g.drawStr( 0, 17, "O2s" );
-    u8g.setPrintPos(25, 17) ;
-    u8g.print(int(getOBDdata(OBD_OXSENS)));
+    u8g.setFont(u8g_font_profont15r);
+    u8g.drawStr( 0, 15, "TOTAL" );
+    u8g.drawStr( 90, 15, "KM" );
+    u8g.setPrintPos(44, 15) ;
+    u8g.print(total_run, 1);
 
-    //u8g.drawStr( 0, 32, "OX2");
-    //u8g.setPrintPos(25, 32) ;
-    //u8g.print( );
+    u8g.setFont(u8g_font_profont15r);
+    u8g.drawStr( 0, 42, "Avg SPD" );
+    u8g.setFont(u8g_font_profont22r);
+    u8g.setPrintPos(0, 60) ;
+    u8g.print(total_avg_speed, 1);
 
-    u8g.drawStr( 0, 47, "SEN");
-    u8g.setPrintPos(25, 47) ;
-    u8g.print( int(getOBDdata(11)));
-
-    u8g.drawStr( 0, 62, "CLD");
-    u8g.setPrintPos(25, 62) ;
-    u8g.print( int(getOBDdata(12)));
-
-    u8g.drawStr( 65, 17, "DET" );
-    u8g.setPrintPos(92, 17) ;
-    u8g.print( int(getOBDdata(13)));
-
-    u8g.drawStr( 65, 32, "FE1");
-    u8g.setPrintPos(92, 32) ;
-    u8g.print( int(getOBDdata(14)));
-
-    u8g.drawStr( 65, 47, "FE2");
-    u8g.setPrintPos(92, 47) ;
-    u8g.print( int(getOBDdata(15)));
-
-    u8g.drawStr( 65, 62, "STR");
-    u8g.setPrintPos(92, 62) ;
-    u8g.print( int(getOBDdata(16)));
-    u8g.drawVLine(63, 0, 64);
+    u8g.setFont(u8g_font_profont15r);
+    u8g.drawStr( 60, 42, "Time (M)" );
+    u8g.setFont(u8g_font_profont22r);
+    u8g.setPrintPos(60, 60) ;
+    u8g.print( float(total_time) / 60000, 1);
   }
   while ( u8g.nextPage() );
 }
-
-
-void drawExtraFlags(void) {
-  u8g.setFont(u8g_font_unifont);
-  u8g.firstPage();
-  do {
-    u8g.drawStr( 0, 17, "IDL" );
-    u8g.setPrintPos(25, 17) ;
-    u8g.print(int(getOBDdata(17)));
-
-    u8g.drawStr( 0, 32, "CND");
-    u8g.setPrintPos(25, 32) ;
-    u8g.print( int(getOBDdata(18)));
-
-    u8g.drawStr( 0, 47, "NEU");
-    u8g.setPrintPos(25, 47) ;
-    u8g.print( int(getOBDdata(19)));
-
-    u8g.drawStr( 0, 62, "EN1");
-    u8g.setPrintPos(25, 62) ;
-    u8g.print( int(getOBDdata(20)));
-
-    u8g.drawStr( 65, 17, "EN2" );
-    u8g.setPrintPos(92, 17) ;
-    u8g.print( int(getOBDdata(21)));
-
-    u8g.drawVLine(63, 0, 64);
-  }
-  while ( u8g.nextPage() );
-}
-
-
 
 void drawAllData(void) {
   // graphic commands to redraw the complete screen should be placed here
-  u8g.setFont(u8g_font_unifont);
+  u8g.setFont(u8g_font_profont15r);
   u8g.firstPage();
   do {
     u8g.drawStr( 0, 17, "INJ" );
@@ -448,9 +417,9 @@ void drawAllData(void) {
 } // end void drawalldata
 
 void displayNoConnection() {
-  u8g.setFont(u8g_font_unifont);
+  u8g.setFont(u8g_font_profont15r);
   u8g.setFontRefHeightExtendedText();
-  u8g.setDefaultForegroundColor();
+  //u8g.setDefaultForegroundColor();
   u8g.setFontPosTop();
   // picture loop
   u8g.firstPage();
@@ -462,6 +431,25 @@ void displayNoConnection() {
 
 } // end void
 
+void autoscreenchange() {
+  CurrentDisplayIDX++;
+  if (CurrentDisplayIDX > 3) CurrentDisplayIDX = 1;
+  drawScreenSelector();
+}
+
+void ent() {
+  LoggingOn = false;
+  //ПЕРЕКЛЮЧЕНИЕ ЭКРАНОВ
+  if (BTN_SCREEN.update())
+  {
+
+    if (BTN_SCREEN.read() == HIGH) //если отпускаем
+      CurrentDisplayIDX++;
+    if (CurrentDisplayIDX > 3) CurrentDisplayIDX = 1;
+    drawScreenSelector();
+  }
+  LoggingOn = true;
+}
 float getOBDdata(byte OBDdataIDX) {
   // define return value
   float returnValue;
@@ -662,18 +650,81 @@ void ChangeState() {
   } // end (InPacket == false)
 } // end void change
 
-void ent() {
-  //ПЕРЕКЛЮЧЕНИЕ ЭКРАНОВ
-  if (BTN_SCREEN.update())
-  {
-    LoggingOn = false;
-    if (BTN_SCREEN.read() == HIGH) //если отпускаем
-      CurrentDisplayIDX++;
-    if (CurrentDisplayIDX > 4) CurrentDisplayIDX = 1;
-    drawScreenSelector();
+
+
+
+
+
+/*
+  void drawExtraData(void) {
+  u8g.setFont(u8g_font_unifontr);
+  u8g.firstPage();
+  do {
+    u8g.drawStr( 0, 17, "O2s" );
+    u8g.setPrintPos(25, 17) ;
+    u8g.print(int(getOBDdata(OBD_OXSENS)));
+
+    //u8g.drawStr( 0, 32, "OX2");
+    //u8g.setPrintPos(25, 32) ;
+    //u8g.print( );
+
+    u8g.drawStr( 0, 47, "SEN");
+    u8g.setPrintPos(25, 47) ;
+    u8g.print( int(getOBDdata(11)));
+
+    u8g.drawStr( 0, 62, "CLD");
+    u8g.setPrintPos(25, 62) ;
+    u8g.print( int(getOBDdata(12)));
+
+    u8g.drawStr( 65, 17, "DET" );
+    u8g.setPrintPos(92, 17) ;
+    u8g.print( int(getOBDdata(13)));
+
+    u8g.drawStr( 65, 32, "FE1");
+    u8g.setPrintPos(92, 32) ;
+    u8g.print( int(getOBDdata(14)));
+
+    u8g.drawStr( 65, 47, "FE2");
+    u8g.setPrintPos(92, 47) ;
+    u8g.print( int(getOBDdata(15)));
+
+    u8g.drawStr( 65, 62, "STR");
+    u8g.setPrintPos(92, 62) ;
+    u8g.print( int(getOBDdata(16)));
+    u8g.drawVLine(63, 0, 64);
   }
-  LoggingOn = true;
-}
+  while ( u8g.nextPage() );
+  }
+*/
+/*
+  void drawExtraFlags(void) {
+  u8g.setFont(u8g_font_unifontr);
+  u8g.firstPage();
+  do {
+    u8g.drawStr( 0, 17, "IDL" );
+    u8g.setPrintPos(25, 17) ;
+    u8g.print(int(getOBDdata(17)));
 
+    u8g.drawStr( 0, 32, "CND");
+    u8g.setPrintPos(25, 32) ;
+    u8g.print( int(getOBDdata(18)));
 
+    u8g.drawStr( 0, 47, "NEU");
+    u8g.setPrintPos(25, 47) ;
+    u8g.print( int(getOBDdata(19)));
+
+    u8g.drawStr( 0, 62, "EN1");
+    u8g.setPrintPos(25, 62) ;
+    u8g.print( int(getOBDdata(20)));
+
+    u8g.drawStr( 65, 17, "EN2" );
+    u8g.setPrintPos(92, 17) ;
+    u8g.print( int(getOBDdata(21)));
+
+    u8g.drawVLine(63, 0, 64);
+  }
+  while ( u8g.nextPage() );
+  }
+
+*/
 
