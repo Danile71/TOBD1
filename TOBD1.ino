@@ -19,7 +19,7 @@
 #define ENGINE_DATA_PIN 2 //VF1 PIN
 #define TOGGLE_BTN_PIN 4 //screen change PIN
 #define INJECTOR_PIN 3 // Номер ноги для форсунки
-#define SS 5 // Номер ноги SS экрана
+#define SS 5 // Номер ноги SS SD модуля
 
 //DEFINE констант расходомера
 #define Ls 0.004 //производительсность форсунки литров в секунду
@@ -63,6 +63,8 @@ float total_avg_speed;
 float avg_speed;
 float curr_obd_inj_dur = 0;
 float total_obd_inj_dur = 0;
+float total_saved_fuel = 0;
+float total_closed_duration = 0;
 float total_obd_inj_dur_ee = 0;
 unsigned long current_time = 0;
 unsigned long total_time = 0;
@@ -71,9 +73,11 @@ float total_duration_inj;
 float current_duration_inj;
 bool flagNulSpeed = true;
 volatile unsigned long Injector_Open_Duration = 0;
+volatile unsigned long Injector_Closed_Duration = 0;
 volatile unsigned long INJ_TIME = 0;
-volatile unsigned long InjectorTime1;
-volatile unsigned long InjectorTime2;
+volatile unsigned long INJ_CLOSED = 0;
+volatile unsigned long InjectorTime1 = 0;
+volatile unsigned long InjectorTime2 = 0;
 
 float total_consumption_inj, current_consumption_inj;
 volatile uint8_t ToyotaNumBytes, ToyotaID, ToyotaData[TOYOTA_MAX_BYTES];
@@ -92,6 +96,7 @@ void setup() {
   EEPROM.get(108, total_time);
   EEPROM.get(200, total_duration_inj);
   EEPROM.get(204, total_obd_inj_dur_ee);
+  EEPROM.get(208, total_closed_duration);
 
   S.begin();
   S.enableDoublePress(true);
@@ -129,7 +134,7 @@ void setup() {
     error("file.open");
   }
   writeHeader();
-    // set and initialize the TIMER1
+  // set and initialize the TIMER1
   TCCR1A = 0; // set entire TCCR1A register to 0
   TCCR1B = 0; // set entire TCCR1B register to 0
   TCCR1B |= (1 << CS12);//prescaler 256 --> Increment time = 256/16.000.000= 16us
@@ -151,6 +156,8 @@ void setup() {
   EEPROM.get(108, total_time);
   EEPROM.get(200, total_duration_inj);
   EEPROM.get(204, total_obd_inj_dur_ee);
+  EEPROM.get(208, total_closed_duration);
+
   t = millis();
   interrupts();
   delay(10);
@@ -165,11 +172,13 @@ void loop(void) {
   unsigned int diff_t;
   switch (S.read())
   {
+    case MD_KeySwitch::KS_NULL: break;
     case MD_KeySwitch::KS_PRESS:    ent(); break;
     case MD_KeySwitch::KS_DPRESS:   {
         if (LoggingOn == false) LoggingOn = true; else LoggingOn = false;
       } break;
     case MD_KeySwitch::KS_LONGPRESS: cleardata(); break;
+    case MD_KeySwitch::KS_RPTPRESS: break;
   }
 
 
@@ -214,6 +223,7 @@ void loop(void) {
     EEPROM.put(108, total_time);
     EEPROM.put(200, total_duration_inj);
     EEPROM.put(204, total_obd_inj_dur_ee);
+    EEPROM.put(208, total_closed_duration);
     flagNulSpeed = true;                                  //запрет повторной записи
   }
   if (getOBDdata(OBD_SPD) != 0) flagNulSpeed = false;     //начали двигаться - разрешаем запись
@@ -221,19 +231,8 @@ void loop(void) {
     logData();
   }
   //  if (millis() % 5000 < 50) autoscreenchange();      // ротация экранов
-} 
-
-void writeHeader() {
-#ifdef LOGGING_FULL
-  file.print(F("INJ_OBD;INJ_HW;IGN;IAC;RPM;MAP;ECT;TPS;SPD;OXSENS;ASE;COLD;DET;OXf;Re-ENRICHMENT;STARTER;IDLE;A/C;NEUTRAL;Ex1;Ex2;AVG SPD;LPK_OBD;LPH_OBD;LPH_INJ;TOTAL_OBD;TOTAL_INJ;AVG_OBD;AVG_INJ"));
-#else
-  file.print(F("INJ_OND;INJ_HW;IGN;IAC;RPM;MAP;ECT;TPS;SPD;O2SENS;AVG SPD;LPK_OBD;LPH_OBD;LPH_INJ;TOTAL_OBD;TOTAL_INJ;AVG_OBD;AVG_INJ;CURR_OBD;CURR_INJ;CURR_RUN;RUN_TOTAL"));
-#endif
-  file.println();
-  if (!file.sync() || file.getWriteError())  error("write error");
 }
 
-//обнуление данных
 void cleardata() {
   int i;
   for (i = 104; i <= 112; i++) {
@@ -246,7 +245,21 @@ void cleardata() {
   EEPROM.get(108, total_time);
   EEPROM.get(200, total_duration_inj);
   EEPROM.get(204, total_obd_inj_dur_ee);
+  EEPROM.get(208, total_closed_duration);
+
 }
+void writeHeader() {
+#ifdef LOGGING_FULL
+  file.print(F("INJ_OBD;INJ_HW;IGN;IAC;RPM;MAP;ECT;TPS;SPD;OXSENS;ASE;COLD;DET;OXf;Re-ENRICHMENT;STARTER;IDLE;A/C;NEUTRAL;Ex1;Ex2;AVG SPD;LPK_OBD;LPH_OBD;LPH_INJ;TOTAL_OBD;TOTAL_INJ;AVG_OBD;AVG_INJ"));
+#else
+  file.print(F("INJ_OBD;INJ_HW;IGN;IAC;RPM;MAP;ECT;TPS;SPD;O2SENS;AVG SPD;LPK_OBD;LPH_OBD;LPH_INJ;TOTAL_OBD;TOTAL_INJ;AVG_OBD;AVG_INJ;CURR_OBD;CURR_INJ;CURR_RUN;RUN_TOTAL;INJ_CLOSED;CLOSED_DUR;SAVED_FUEL"));
+#endif
+  file.println();
+  if (!file.sync() || file.getWriteError())  error("write error");
+}
+
+//обнуление данных
+
 
 void logData() {
   file.print(getOBDdata(OBD_INJ)); file.write(';'); file.print(float(INJ_TIME) / 1000); file.write(';'); file.print(getOBDdata(OBD_IGN));  file.write(';');  file.print(getOBDdata(OBD_IAC));  file.write(';');
@@ -272,7 +285,11 @@ void logData() {
   file.print(current_consumption_inj);  file.write(';'); //!CURR_INJ
 
   file.print(current_run);   file.write(';');    //CURR_RUN ok
-  file.print(total_run); //RUN_TOTAL      ok
+  file.print(total_run); file.write(';');//RUN_TOTAL      ok
+  file.print(INJ_CLOSED);  file.write(';');     //INJ_CLOSED
+  file.print(total_closed_duration);  file.write(';');  //CLOSED_DUR
+  file.print(total_saved_fuel);     //SAVED_FUEL
+
   file.println();
   if (!file.sync() || file.getWriteError())  error("write error");
 }
@@ -284,18 +301,31 @@ void InjectorTime() { // it is called every time a change occurs at the gasoline
   if (digitalRead(INJECTOR_PIN) == HIGH) {
     InjectorTime2 = micros();
   }
-  if ((InjectorTime2 - InjectorTime1) > 500 && (InjectorTime2 - InjectorTime1) < 15000) {  // Замечено что при резком сбросе оборотов всплески > 15мс=15000мкс. Вангую что это торможение двигателем и форсунки отключается.
-    Injector_Open_Duration += (InjectorTime2 - InjectorTime1) * Ncyl;    //Суммирование времени открытия Ncyl форсунок для подсчета суммарного расхода. в микросекундах.
-    INJ_TIME = InjectorTime2 - InjectorTime1;                          //длительность впрыска
+  if (InjectorTime2 > InjectorTime1) {
+    if ((InjectorTime2 - InjectorTime1) > 500 && (InjectorTime2 - InjectorTime1) < 15000) {  // Замечено что при резком сбросе оборотов всплески > 15мс=15000мкс. Вангую что это торможение двигателем и форсунки отключается.
+      Injector_Open_Duration += (InjectorTime2 - InjectorTime1) * Ncyl;    //Суммирование времени открытия Ncyl форсунок для подсчета суммарного расхода. в микросекундах.
+      INJ_TIME = InjectorTime2 - InjectorTime1;                          //длительность впрыска
+    }
+  }
+  if (InjectorTime1 > InjectorTime2) {              //если наоборот то получаем что инжектор закрыт
+    if ((InjectorTime1 - InjectorTime2) > 300000) {   //если инжектор закрыт более 300мс то предполагаем что активен принудительный ХХ
+      INJ_CLOSED = InjectorTime1 - InjectorTime2;
+      Injector_Closed_Duration += (InjectorTime1 - InjectorTime2) * Ncyl;
+    }
   }
 }
+
+
 
 ISR(TIMER1_OVF_vect) { //TIMER1 overflow interrupt -- occurs every 1sec -- it holds the time (in seconds) and also prevents the overflowing of some variables
   total_duration_inj += (float)Injector_Open_Duration / 1000;  // Полный время открытия форсунок по проводу в миллисекундах. Хранится в EEPROM.
   current_duration_inj += (float)Injector_Open_Duration / 1000; // Время открытия форсунок по проводу в миллисекундах за поездку.
   total_consumption_inj = total_duration_inj / 1000 * Ls;
   current_consumption_inj = current_duration_inj / 1000 * Ls;
+  total_closed_duration += (float)Injector_Closed_Duration / 1000;
+  total_saved_fuel = total_closed_duration / 1000 * Ls;
   Injector_Open_Duration = 0;
+  Injector_Closed_Duration = 0;
   TCNT1 = 3036;
 }
 
