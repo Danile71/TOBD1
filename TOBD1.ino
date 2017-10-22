@@ -53,7 +53,7 @@ SdFile file;
 
 MD_KeySwitch S(TOGGLE_BTN_PIN, HIGH);
 byte CurrentDisplayIDX = 1;
-
+float total_consumption_obd_ee = 0, current_consumption_obd = 0;
 float current_run = 0;
 float total_run = 0;
 float total_avg_consumption;
