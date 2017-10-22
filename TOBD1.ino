@@ -18,11 +18,11 @@
 #define LED_PIN          13
 #define ENGINE_DATA_PIN 2 //VF1 PIN
 #define TOGGLE_BTN_PIN 4 //screen change PIN
-#define INJECTOR_PIN 3 // Номер ноги для форсунки
+//#define INJECTOR_PIN 3 // Номер ноги для форсунки
 #define SS 5 // Номер ноги SS SD модуля
 
 //DEFINE констант расходомера
-#define Ls 0.003965888 //производительсность форсунки литров в секунду // базовый 0.004 или 240cc
+#define Ls 0.004020653 //производительсность форсунки литров в секунду // базовый 0.004 или 240cc
 
 #define Ncyl 6 //кол-во цилиндров
 
@@ -53,25 +53,21 @@ SdFile file;
 
 MD_KeySwitch S(TOGGLE_BTN_PIN, HIGH);
 byte CurrentDisplayIDX = 1;
-
-float current_run = 0;
-float total_run = 0;
+float total_fuel_consumption_ee = 0, trip_fuel_consumption = 0;
+float trip_avg_fuel_consumption;
+float cycle_obd_inj_dur = 0;
+float trip_inj_dur = 0;
+float total_inj_dur_ee = 0;
+float current_trip = 0;
+float total_trip = 0;
 float total_avg_consumption;
-float avg_consumption_inj;
 float total_avg_speed;
-float avg_speed;
+float trip_avg_speed;
 unsigned long current_time = 0;
 unsigned long total_time = 0;
 unsigned long t;
-float total_duration_inj;
-float current_duration_inj;
 bool flagNulSpeed = true;
-volatile unsigned long Injector_Open_Duration = 0;
-volatile unsigned long INJ_TIME = 0;
-volatile unsigned long InjectorTime1 = 0;
-volatile unsigned long InjectorTime2 = 0;
 
-float total_consumption_inj, current_consumption_inj;
 volatile uint8_t ToyotaNumBytes, ToyotaID, ToyotaData[TOYOTA_MAX_BYTES];
 volatile uint16_t ToyotaFailBit = 0;
 
@@ -84,11 +80,11 @@ void setup() {
   const uint8_t BASE_NAME_SIZE = sizeof(FILE_BASE_NAME) - 1;
   noInterrupts();
   Serial.begin(115200);
-  EEPROM.get(104, total_run);
+  EEPROM.get(104, total_trip);
   EEPROM.get(108, total_time);
-  EEPROM.get(200, total_duration_inj);
-  // EEPROM.get(204, total_obd_inj_dur_ee);
-  // EEPROM.get(208, total_closed_duration);
+  //EEPROM.get(200, total_duration_inj);
+  EEPROM.get(204, total_inj_dur_ee);
+
 
   S.begin();
   S.enableDoublePress(true);
@@ -101,14 +97,18 @@ void setup() {
   if (DEBUG_OUTPUT) {
     Serial.println("system Started");
     Serial.print("Read float from EEPROM: ");
-    Serial.println(total_run, 3);
+    Serial.println(total_trip, 3);
     Serial.println(total_time, 3);
-    Serial.println(total_duration_inj, 3);
-    //   Serial.println(total_obd_inj_dur_ee, 3);
+    //    Serial.println(total_duration_inj, 3);
+    Serial.println(total_inj_dur_ee, 3);
   }
 
-  if (!sd.begin(SS, SD_SCK_MHZ(50))) {
+  if (!sd.begin(SS, SD_SCK_MHZ(4))) {
     sd.initErrorHalt();
+  }
+
+  if (BASE_NAME_SIZE > 6) {
+    error("FILE_BASE_NAME too long");
   }
   while (sd.exists(fileName)) {
     if (fileName[BASE_NAME_SIZE + 1] != '9') {
@@ -121,43 +121,22 @@ void setup() {
     }
   }
 
-
-  if (!file.open(fileName, O_CREAT | O_WRITE )) {
+  if (!file.open(fileName, O_CREAT | O_WRITE  | O_EXCL)) {
     error("file.open");
   }
   writeHeader();
-  // set and initialize the TIMER1
-  TCCR1A = 0; // set entire TCCR1A register to 0
-  TCCR1B = 0; // set entire TCCR1B register to 0
-  TCCR1B |= (1 << CS12);//prescaler 256 --> Increment time = 256/16.000.000= 16us
-  TIMSK1 |= (1 << TOIE1); // enable Timer1 overflow interrupt
-  TCNT1 = 3036; // counter initial value so as to overflow every 1sec: 65536 - 3036 = 62500 * 16us = 1sec (65536 maximum value of the timer)
 
   pinMode(ENGINE_DATA_PIN, INPUT); // VF1 PIN
-  pinMode(INJECTOR_PIN, INPUT); // Injector PIN
   pinMode(LED_PIN, OUTPUT);
   attachInterrupt(digitalPinToInterrupt(ENGINE_DATA_PIN), ChangeState, CHANGE); //setup Interrupt for data line
-  attachInterrupt(digitalPinToInterrupt(INJECTOR_PIN), InjectorTime, CHANGE); //setup Interrupt for data line
-
   pinMode(TOGGLE_BTN_PIN, INPUT);           // кнопка СЛЕД. ЭКРАН
-
   CurrentDisplayIDX = 1; // set to display 1
   drawScreenSelector();
   //Расходомер
-  EEPROM.get(104, total_run);
-  EEPROM.get(108, total_time);
-  EEPROM.get(200, total_duration_inj);
-  //  EEPROM.get(204, total_obd_inj_dur_ee);
-  // EEPROM.get(208, total_closed_duration);
-
   t = millis();
   interrupts();
   delay(10);
 } // END VOID SETUP
-
-
-
-
 
 void loop(void) {
   unsigned long new_t;
@@ -173,35 +152,49 @@ void loop(void) {
     case MD_KeySwitch::KS_RPTPRESS: break;
   }
 
-
-
   if (ToyotaNumBytes > 0)  {    // if found bytes
     new_t = millis();
     if (new_t > t) {
       diff_t = new_t - t;
+      cycle_obd_inj_dur = getOBDdata(OBD_RPM) / 60 / 2 * Ncyl * (float)diff_t / 1000 * getOBDdata(OBD_INJ); //Время открытых форсунок за 1 такт данных. В МС
+      //ОБ/М           ОБ/С
+      //форсунка срабатывает раз в 2 оборота КВ
+      //6форсунок в с
+      //время цикла мс в с. Получаем кол-во срабатываний за время цикла. Умножаем на время открытия форсунки, получаем время открытия 6 форсунок В МИЛЛИСЕКУНДАХ
 
-      current_run += (float)diff_t / 3600000 * getOBDdata(OBD_SPD);  //Пройденное расстояние с момента включения. В КМ
-      total_run += (float)diff_t / 3600000 * getOBDdata(OBD_SPD);    //Полное пройденное расстояние. EEPROM. В КМ
+      trip_inj_dur += cycle_obd_inj_dur;                                                              //Время открытых форсунок за поездку        В МС
+      total_inj_dur_ee += cycle_obd_inj_dur;                                                           //Время открытых форсунок за все время. EEPROM    В МС
+
+      total_fuel_consumption_ee = total_inj_dur_ee / 1000 * Ls;
+      trip_fuel_consumption = trip_inj_dur / 1000 * Ls;
+
+      current_trip += (float)diff_t / 3600000 * getOBDdata(OBD_SPD);  //Пройденное расстояние с момента включения. В КМ
+      total_trip += (float)diff_t / 3600000 * getOBDdata(OBD_SPD);    //Полное пройденное расстояние. EEPROM. В КМ
 
       total_time += diff_t;                         //полное пройденное время в миллисекундах лимит ~49 суток. EEPROM
       current_time += diff_t;             //Время в пути в миллисекундах с момента включения
 
-      total_avg_speed = total_run / (float)total_time * 3600000;           // средняя скорость за все время. км\ч
-      avg_speed = current_run / (float)current_time * 3600000 ;       //average speed
-      total_avg_consumption = 100 * total_consumption_inj / total_run;
-      avg_consumption_inj = 100 * current_consumption_inj / current_run; //average l/100km for unleaded fuel     //вроде норм
+      total_avg_speed = total_trip / (float)total_time * 3600000;           // средняя скорость за все время. км\ч
+      trip_avg_speed = current_trip / (float)current_time * 3600000 ;       //average speed
+
+      total_avg_consumption = total_inj_dur_ee / 1000 * Ls * 100 / total_trip; //    среднее потребление за все время - Л на 100км
+      trip_avg_fuel_consumption = 100 * trip_fuel_consumption / current_trip;
       t = millis();
     }
+
     drawScreenSelector(); // draw screen
     ToyotaNumBytes = 0;     // reset the counter.
   } // end if (ToyotaNumBytes > 0)
+  total_avg_consumption = total_inj_dur_ee / 1000 * Ls * 100 / total_trip; //    среднее потребление за все время - Л на 100км
+  total_fuel_consumption_ee = total_inj_dur_ee / 1000 * Ls;
+  total_avg_speed = total_trip / (float)total_time * 3600000;           // средняя скорость за все время. км\ч
 
   if (getOBDdata(OBD_SPD) == 0 && flagNulSpeed == false)  {   //Запись данных в еепром когда остановка авто
-    EEPROM.put(104, total_run);
+    EEPROM.put(104, total_trip);
     EEPROM.put(108, total_time);
-    EEPROM.put(200, total_duration_inj);
-    // EEPROM.put(204, total_obd_inj_dur_ee);
-    //  EEPROM.put(208, total_closed_duration);
+    //    EEPROM.put(200, total_duration_inj);
+    EEPROM.put(204, total_inj_dur_ee);
+
     flagNulSpeed = true;                                  //запрет повторной записи
   }
   if (getOBDdata(OBD_SPD) != 0) flagNulSpeed = false;     //начали двигаться - разрешаем запись
@@ -216,21 +209,21 @@ void cleardata() {
   for (i = 104; i <= 112; i++) {
     EEPROM.update(i, 0);
   }
-  for (i = 200; i <= 212; i++) {
+  for (i = 200; i <= 208; i++) {
     EEPROM.update(i, 0);
   }
-  EEPROM.get(104, total_run);
+  EEPROM.get(104, total_trip);
   EEPROM.get(108, total_time);
-  EEPROM.get(200, total_duration_inj);
-  // EEPROM.get(204, total_obd_inj_dur_ee);
-  // EEPROM.get(208, total_closed_duration);
+  //  EEPROM.get(200, total_duration_inj);
+  EEPROM.get(204, total_inj_dur_ee);
+
 
 }
 void writeHeader() {
 #ifdef LOGGING_FULL
-  file.print(F("INJ_OBD;INJ_HW;IGN;IAC;RPM;MAP;ECT;TPS;SPD;OXSENS;ASE;COLD;DET;OXf;Re-ENRICHMENT;STARTER;IDLE;A/C;NEUTRAL;Ex1;Ex2;AVG SPD;LPK_OBD;LPH_OBD;LPH_INJ;TOTAL_OBD;TOTAL_INJ;AVG_OBD;AVG_INJ"));
+  file.print(F("INJ_OBD;IGN;IAC;RPM;MAP;ECT;TPS;SPD;OXSENS;ASE;COLD;DET;OXf;Re-ENRICHMENT;STARTER;IDLE;A/C;NEUTRAL;Ex1;Ex2;AVG SPD;LPK_OBD;LPH_OBD;LPH_INJ;TOTAL_OBD;TOTAL_INJ;AVG_OBD;AVG_INJ"));
 #else
-  file.print(F("INJ_OBD;INJ_HW;IGN;IAC;RPM;MAP;ECT;TPS;SPD;O2SENS;EXHAUST;AVG SPD;LPH_INJ;TOTAL_INJ;AVG_INJ;CURR_INJ;CURR_RUN;TOTAL_RUN;"));
+  file.print(F("INJ_OBD;IAC;RPM;MAP;ECT;TPS;SPD;O2SENS;EXHAUST;AVG SPD;LPK_OBD;LPH_OBD;TOTAL_OBD;AVG_OBD;CURR_OBD;CURR_RUN;total_trip;"));
 #endif
   file.println();
   if (!file.sync() || file.getWriteError())  error("write error");
@@ -240,7 +233,7 @@ void writeHeader() {
 
 
 void logData() {
-  file.print(getOBDdata(OBD_INJ)); file.write(';'); file.print(float(INJ_TIME) / 1000); file.write(';'); file.print(getOBDdata(OBD_IGN));  file.write(';');  file.print(getOBDdata(OBD_IAC));  file.write(';');
+  file.print(getOBDdata(OBD_INJ)); file.write(';'); file.write(';'); file.print(getOBDdata(OBD_IGN));  file.write(';');  file.print(getOBDdata(OBD_IAC));  file.write(';');
   file.print(getOBDdata(OBD_RPM)); file.write(';'); file.print(getOBDdata(OBD_MAP));  file.write(';'); file.print(getOBDdata(OBD_ECT));  file.write(';');
   file.print(getOBDdata(OBD_TPS)); file.write(';');  file.print(getOBDdata(OBD_SPD));  file.write(';'); file.print(getOBDdata(OBD_OXSENS)); file.write(';'); file.print(getOBDdata(20)); file.write(';');
 #ifdef LOGGING_FULL
@@ -249,49 +242,23 @@ void logData() {
   file.print(getOBDdata(19)); file.write(';'); file.print(getOBDdata(20)); file.write(';'); file.print(getOBDdata(21)); file.write(';');
 #endif
   file.print(total_avg_speed); file.write(';');                                                                   //AVG_SPD       ok
-  file.print(float(INJ_TIME) / 1000 * getOBDdata(OBD_RPM)*Ls * 0.18); file.write(';');                          //LPH_INJ     ok
-  file.print(total_consumption_inj); file.write(';'); //TOTAL_INJ   ok
-  file.print(avg_consumption_inj);  file.write(';');     //!AVG_INJ
-  file.print(current_consumption_inj);  file.write(';'); //!CURR_INJ
-
-  file.print(current_run);   file.write(';');    //CURR_RUN ok
-  file.print(total_run); file.write(';');//RUN_TOTAL      ok
-
+  file.print(100 / getOBDdata(OBD_SPD) * (getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18)); file.write(';');  //LPK_OBD      ok
+  file.print(getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18); file.write(';');                                //LPH_OBD    ok
+  file.print(total_fuel_consumption_ee); file.write(';');   //TOTAL_OBD     ok
+  file.print(trip_avg_fuel_consumption); file.write(';');   //!AVG_OBD
+  file.print(trip_fuel_consumption); file.write(';');  //!CURR_OBD
+  file.print(current_trip);   file.write(';');    //CURR_RUN ok
+  file.print(total_trip); file.write(';');//RUN_TOTAL      ok
   file.println();
   if (!file.sync() || file.getWriteError())  error("write error");
-}
-
-void InjectorTime() { // it is called every time a change occurs at the gasoline injector signal and calculates gasoline injector opening time, during the 1sec interval
-  if (digitalRead(INJECTOR_PIN) == LOW) {
-    InjectorTime1 = micros();
-  }
-  if (digitalRead(INJECTOR_PIN) == HIGH) {
-    InjectorTime2 = micros();
-  }
-  if (InjectorTime2 > InjectorTime1) {
-    if ((InjectorTime2 - InjectorTime1) > 500 && (InjectorTime2 - InjectorTime1) < 15000) {  // Замечено что при резком сбросе оборотов всплески > 15мс=15000мкс. Вангую что это торможение двигателем и форсунки отключается.
-      Injector_Open_Duration += (InjectorTime2 - InjectorTime1) * Ncyl;    //Суммирование времени открытия Ncyl форсунок для подсчета суммарного расхода. в микросекундах.
-      INJ_TIME = InjectorTime2 - InjectorTime1;                          //длительность впрыска
-    }
-  }
-}
-
-
-
-ISR(TIMER1_OVF_vect) { //TIMER1 overflow interrupt -- occurs every 1sec -- it holds the time (in seconds) and also prevents the overflowing of some variables
-  total_duration_inj += (float)Injector_Open_Duration / 1000;  // Полный время открытия форсунок по проводу в миллисекундах. Хранится в EEPROM.
-  current_duration_inj += (float)Injector_Open_Duration / 1000; // Время открытия форсунок по проводу в миллисекундах за поездку.
-  total_consumption_inj = total_duration_inj / 1000 * Ls;
-  current_consumption_inj = current_duration_inj / 1000 * Ls;
-  Injector_Open_Duration = 0;
-  TCNT1 = 3036;
 }
 
 void drawScreenSelector(void) {
   if (CurrentDisplayIDX == 1) DrawCurrentFuelConsuption();
   else if (CurrentDisplayIDX == 2) DrawTotalFuelConsuption();
   else if (CurrentDisplayIDX == 3) drawTimeDistance();
-  else if (CurrentDisplayIDX == 4) drawAllData();
+  else if (CurrentDisplayIDX == 4) drawTripTimeDistance();
+  else if (CurrentDisplayIDX == 5) drawAllData();
 } // end drawScreenSelector()
 
 void DrawCurrentFuelConsuption(void) {
@@ -303,7 +270,7 @@ void DrawCurrentFuelConsuption(void) {
     u8g.drawStr( 106, 15, "L" );
     if (LoggingOn == true) u8g.drawStr( 119, 15, "#" );
     u8g.setPrintPos(59, 15) ;
-    u8g.print(current_consumption_inj, 1);
+    u8g.print(trip_fuel_consumption, 1);
     if (getOBDdata(OBD_SPD) > 1)
     {
       u8g.setFont(u8g_font_profont15r);
@@ -322,8 +289,8 @@ void DrawCurrentFuelConsuption(void) {
     u8g.drawStr( 60, 42, "Average" );
     u8g.setFont(u8g_font_profont22r);
     u8g.setPrintPos(60, 60) ;
-    if (avg_consumption_inj < 100)
-      u8g.print( avg_consumption_inj, 1);
+    if (trip_avg_fuel_consumption < 100)
+      u8g.print( trip_avg_fuel_consumption, 1);
     else u8g.drawStr( 60, 60, "---" );
   }
   while ( u8g.nextPage() );
@@ -338,7 +305,7 @@ void DrawTotalFuelConsuption(void) {
     u8g.drawStr( 90, 15, "L" );
     if (LoggingOn == true) u8g.drawStr( 119, 15, "#" );
     u8g.setPrintPos(44, 15) ;
-    u8g.print(total_consumption_inj, 1);
+    u8g.print(total_fuel_consumption_ee, 1);
     if (getOBDdata(OBD_SPD) > 1)
     {
       u8g.setFont(u8g_font_profont15r);
@@ -357,7 +324,7 @@ void DrawTotalFuelConsuption(void) {
     u8g.drawStr( 60, 42, "Average" );
     u8g.setFont(u8g_font_profont22r);
     u8g.setPrintPos(60, 60) ;
-    if (avg_consumption_inj < 100)
+    if (total_avg_consumption < 100)
       u8g.print( total_avg_consumption, 1);
     else u8g.drawStr( 60, 60, "---" );
   }
@@ -373,7 +340,7 @@ void drawTimeDistance(void) {
     u8g.drawStr( 90, 15, "KM" );
     if (LoggingOn == true) u8g.drawStr( 119, 15, "#" );
     u8g.setPrintPos(44, 15) ;
-    u8g.print(total_run, 1);
+    u8g.print(total_trip, 1);
 
     u8g.setFont(u8g_font_profont15r);
     u8g.drawStr( 0, 42, "Avg SPD" );
@@ -389,6 +356,34 @@ void drawTimeDistance(void) {
   }
   while ( u8g.nextPage() );
 }
+
+void drawTripTimeDistance(void) {
+  u8g.setFont(u8g_font_profont15r);
+  u8g.firstPage();
+  do {
+    u8g.setFont(u8g_font_profont15r);
+    u8g.drawStr( 0, 15, "TRIP" );
+    u8g.drawStr( 90, 15, "KM" );
+    if (LoggingOn == true) u8g.drawStr( 119, 15, "#" );
+    u8g.setPrintPos(44, 15) ;
+    u8g.print(current_trip, 1);
+
+    u8g.setFont(u8g_font_profont15r);
+    u8g.drawStr( 0, 42, "Avg SPD" );
+    u8g.setFont(u8g_font_profont22r);
+    u8g.setPrintPos(0, 60) ;
+    u8g.print(trip_avg_speed, 1);
+
+    u8g.setFont(u8g_font_profont15r);
+    u8g.drawStr( 60, 42, "Time (M)" );
+    u8g.setFont(u8g_font_profont22r);
+    u8g.setPrintPos(60, 60) ;
+    u8g.print( float(current_time) / 60000, 1);
+  }
+  while ( u8g.nextPage() );
+}
+
+
 
 void drawAllData(void) {
   // graphic commands to redraw the complete screen should be placed here
@@ -438,7 +433,7 @@ void autoscreenchange() {
 }
 void ent() {//ПЕРЕКЛЮЧЕНИЕ ЭКРАНОВ
   CurrentDisplayIDX++;
-  if (CurrentDisplayIDX > 4) CurrentDisplayIDX = 1;
+  if (CurrentDisplayIDX > 5) CurrentDisplayIDX = 1;
   drawScreenSelector();
 }
 
