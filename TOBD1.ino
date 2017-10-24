@@ -11,7 +11,8 @@
 #include <EEPROM.h>
 #include <MD_KeySwitch.h>
 
-//#define LOGGING_FULL    //Запись на SD всех данных
+#define LOGGING_FULL    //Запись на SD всех данных
+//#define SECOND_O2SENS
 #define DEBUG_OUTPUT true // for debug option - swith output to Serial
 
 //DEFINE пинов под входы-выходы
@@ -43,8 +44,9 @@
 #define OBD_TPS 7 // Throttle Position Sensor (TPS)
 #define OBD_SPD 8 //Speed (SPD)
 #define OBD_OXSENS 9 // Лямбда 1
-//#define OBD_OXSENS2 10 // Лямбда 2 на V-образных движка. У меня ее нету.
-
+#ifdef SECOND_O2SENS
+#define OBD_OXSENS2 10 // Лямбда 2 на V-образных движка. У меня ее нету.
+#endif
 
 U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NONE);
 
@@ -53,9 +55,10 @@ SdFile file;
 
 MD_KeySwitch S(TOGGLE_BTN_PIN, HIGH);
 byte CurrentDisplayIDX = 1;
-float total_fuel_consumption_ee = 0, trip_fuel_consumption = 0;
+float total_fuel_consumption = 0, trip_fuel_consumption = 0;
 float trip_avg_fuel_consumption;
 float cycle_obd_inj_dur = 0;
+float cycle_trip = 0;
 float trip_inj_dur = 0;
 float total_inj_dur_ee = 0;
 float current_trip = 0;
@@ -66,6 +69,8 @@ float trip_avg_speed;
 unsigned long current_time = 0;
 unsigned long total_time = 0;
 unsigned long t;
+unsigned long last_log_time = 0;
+unsigned long odometer;
 bool flagNulSpeed = true;
 
 volatile uint8_t ToyotaNumBytes, ToyotaID, ToyotaData[TOYOTA_MAX_BYTES];
@@ -80,11 +85,12 @@ void setup() {
   const uint8_t BASE_NAME_SIZE = sizeof(FILE_BASE_NAME) - 1;
   noInterrupts();
   Serial.begin(115200);
+  delay(100);
+  //EEPROM.put(200, odometer); запись значения одометра
   EEPROM.get(104, total_trip);
   EEPROM.get(108, total_time);
-  //EEPROM.get(200, total_duration_inj);
+  EEPROM.get(200, odometer);
   EEPROM.get(204, total_inj_dur_ee);
-
 
   S.begin();
   S.enableDoublePress(true);
@@ -99,14 +105,13 @@ void setup() {
     Serial.print("Read float from EEPROM: ");
     Serial.println(total_trip, 3);
     Serial.println(total_time, 3);
-    //    Serial.println(total_duration_inj, 3);
+    Serial.println(odometer, 1);
     Serial.println(total_inj_dur_ee, 3);
   }
 
-  if (!sd.begin(SS, SD_SCK_MHZ(4))) {
+  if (!sd.begin(SS, SD_SCK_MHZ(50))) {
     sd.initErrorHalt();
   }
-
   if (BASE_NAME_SIZE > 6) {
     error("FILE_BASE_NAME too long");
   }
@@ -134,8 +139,9 @@ void setup() {
   drawScreenSelector();
   //Расходомер
   t = millis();
+  last_log_time = millis();
   interrupts();
-  delay(10);
+  delay(1000);
 } // END VOID SETUP
 
 void loop(void) {
@@ -154,9 +160,9 @@ void loop(void) {
 
   if (ToyotaNumBytes > 0)  {    // if found bytes
     new_t = millis();
-    if (new_t > t) {
+    if (new_t > t && getOBDdata(OBD_RPM) > 100 ) {// выполняем только когда на работающем двигателе
       diff_t = new_t - t;
-      cycle_obd_inj_dur = getOBDdata(OBD_RPM) / 60 / 2 * Ncyl * (float)diff_t / 1000 * getOBDdata(OBD_INJ); //Время открытых форсунок за 1 такт данных. В МС
+      cycle_obd_inj_dur = getOBDdata(OBD_RPM) / 120000 * Ncyl * (float)diff_t  * getOBDdata(OBD_INJ); //Время открытых форсунок за 1 такт данных. В МС
       //ОБ/М           ОБ/С
       //форсунка срабатывает раз в 2 оборота КВ
       //6форсунок в с
@@ -165,11 +171,13 @@ void loop(void) {
       trip_inj_dur += cycle_obd_inj_dur;                                                              //Время открытых форсунок за поездку        В МС
       total_inj_dur_ee += cycle_obd_inj_dur;                                                           //Время открытых форсунок за все время. EEPROM    В МС
 
-      total_fuel_consumption_ee = total_inj_dur_ee / 1000 * Ls;
+      total_fuel_consumption = total_inj_dur_ee / 1000 * Ls;
       trip_fuel_consumption = trip_inj_dur / 1000 * Ls;
 
-      current_trip += (float)diff_t / 3600000 * getOBDdata(OBD_SPD);  //Пройденное расстояние с момента включения. В КМ
-      total_trip += (float)diff_t / 3600000 * getOBDdata(OBD_SPD);    //Полное пройденное расстояние. EEPROM. В КМ
+      cycle_trip = (float)diff_t / 3600000 * getOBDdata(OBD_SPD);
+      current_trip += cycle_trip;  //Пройденное расстояние с момента включения. В КМ
+      total_trip += cycle_trip;    //Полное пройденное расстояние. EEPROM. В КМ
+      odometer += cycle_trip;       //электронный одометр. Хранится в еепром и не стирается кнопкой
 
       total_time += diff_t;                         //полное пройденное время в миллисекундах лимит ~49 суток. EEPROM
       current_time += diff_t;             //Время в пути в миллисекундах с момента включения
@@ -177,31 +185,38 @@ void loop(void) {
       total_avg_speed = total_trip / (float)total_time * 3600000;           // средняя скорость за все время. км\ч
       trip_avg_speed = current_trip / (float)current_time * 3600000 ;       //average speed
 
-      total_avg_consumption = total_inj_dur_ee / 1000 * Ls * 100 / total_trip; //    среднее потребление за все время - Л на 100км
+      total_avg_consumption = 100 * total_fuel_consumption / total_trip; //    среднее потребление за все время - Л на 100км
       trip_avg_fuel_consumption = 100 * trip_fuel_consumption / current_trip;
       t = millis();
-    }
 
+      if (LoggingOn == true) logData();         //запись в лог данных по двоному нажатию на кнопку
+
+      updateEepromData();
+
+      if (millis() - last_log_time > 180000) {        //Запись данных в EEPROM каждые 3 минуты. Чтобы не потерять данные при движении на трассе
+        EEPROM.put(104, total_trip);
+        EEPROM.put(108, total_time);
+        EEPROM.put(200, odometer);
+        EEPROM.put(204, total_inj_dur_ee);
+        last_log_time = millis();
+      }
+    }
     drawScreenSelector(); // draw screen
     ToyotaNumBytes = 0;     // reset the counter.
-  } // end if (ToyotaNumBytes > 0)
-  total_avg_consumption = total_inj_dur_ee / 1000 * Ls * 100 / total_trip; //    среднее потребление за все время - Л на 100км
-  total_fuel_consumption_ee = total_inj_dur_ee / 1000 * Ls;
-  total_avg_speed = total_trip / (float)total_time * 3600000;           // средняя скорость за все время. км\ч
 
+  } // end if (ToyotaNumBytes > 0)
+  //  if (millis() % 5000 < 50) autoscreenchange();      // ротация экранов
+}
+void updateEepromData() {
   if (getOBDdata(OBD_SPD) == 0 && flagNulSpeed == false)  {   //Запись данных в еепром когда остановка авто
     EEPROM.put(104, total_trip);
     EEPROM.put(108, total_time);
-    //    EEPROM.put(200, total_duration_inj);
+    EEPROM.put(200, odometer);
     EEPROM.put(204, total_inj_dur_ee);
-
     flagNulSpeed = true;                                  //запрет повторной записи
+    last_log_time = millis();                             //чтобы не писать лишний раз
   }
   if (getOBDdata(OBD_SPD) != 0) flagNulSpeed = false;     //начали двигаться - разрешаем запись
-  if (millis() % 500 < 50 && LoggingOn == true) {         //каждую 0.5с запись в лог данных по двоному нажатию на кнопку
-    logData();
-  }
-  //  if (millis() % 5000 < 50) autoscreenchange();      // ротация экранов
 }
 
 void cleardata() {
@@ -209,48 +224,48 @@ void cleardata() {
   for (i = 104; i <= 112; i++) {
     EEPROM.update(i, 0);
   }
-  for (i = 200; i <= 208; i++) {
+  for (i = 204; i <= 208; i++) {
     EEPROM.update(i, 0);
   }
   EEPROM.get(104, total_trip);
   EEPROM.get(108, total_time);
-  //  EEPROM.get(200, total_duration_inj);
   EEPROM.get(204, total_inj_dur_ee);
 
 
 }
 void writeHeader() {
 #ifdef LOGGING_FULL
-  file.print(F("INJ_OBD;IGN;IAC;RPM;MAP;ECT;TPS;SPD;OXSENS;ASE;COLD;DET;OXf;Re-ENRICHMENT;STARTER;IDLE;A/C;NEUTRAL;Ex1;Ex2;AVG SPD;LPK_OBD;LPH_OBD;LPH_INJ;TOTAL_OBD;TOTAL_INJ;AVG_OBD;AVG_INJ"));
+  file.print(F(";INJ TIME;IGN;IAC;RPM;MAP;ECT;TPS;SPD;VF1;OX;ASE;COLD;KNOCK;OPEN LOOP;Acceleration Enrichment;STARTER;IDLE;A/C;NEUTRAL;AVG SPD;LPK_OBD;LPH_OBD;TOTAL_OBD;AVG_OBD;CURR_OBD;CURR_RUN;total_trip"));
 #else
-  file.print(F("INJ_OBD;IAC;RPM;MAP;ECT;TPS;SPD;O2SENS;EXHAUST;AVG SPD;LPK_OBD;LPH_OBD;TOTAL_OBD;AVG_OBD;CURR_OBD;CURR_RUN;total_trip;"));
+  file.print(F(";INJ TIME;IGN;IAC;RPM;MAP;ECT;TPS;SPD;VF1;OX;AVG SPD;LPK_OBD;LPH_OBD;TOTAL_OBD;AVG_OBD;CURR_OBD;CURR_RUN;total_trip"));
 #endif
   file.println();
-  if (!file.sync() || file.getWriteError())  error("write error");
+  file.sync();
 }
 
 //обнуление данных
 
 
 void logData() {
-  file.print(getOBDdata(OBD_INJ)); file.write(';'); file.write(';'); file.print(getOBDdata(OBD_IGN));  file.write(';');  file.print(getOBDdata(OBD_IAC));  file.write(';');
+  file.print(float(millis()) / 60000); file.write(';');
+  file.print(getOBDdata(OBD_INJ)); file.write(';'); file.print(getOBDdata(OBD_IGN));  file.write(';');  file.print(getOBDdata(OBD_IAC));  file.write(';');
   file.print(getOBDdata(OBD_RPM)); file.write(';'); file.print(getOBDdata(OBD_MAP));  file.write(';'); file.print(getOBDdata(OBD_ECT));  file.write(';');
   file.print(getOBDdata(OBD_TPS)); file.write(';');  file.print(getOBDdata(OBD_SPD));  file.write(';'); file.print(getOBDdata(OBD_OXSENS)); file.write(';'); file.print(getOBDdata(20)); file.write(';');
 #ifdef LOGGING_FULL
   file.print(getOBDdata(11)); file.write(';'); file.print(getOBDdata(12)); file.write(';'); file.print(getOBDdata(13)); file.write(';'); file.print(getOBDdata(14)); file.write(';');
   file.print(getOBDdata(15)); file.write(';'); file.print(getOBDdata(16)); file.write(';'); file.print(getOBDdata(17)); file.write(';'); file.print(getOBDdata(18)); file.write(';');
-  file.print(getOBDdata(19)); file.write(';'); file.print(getOBDdata(20)); file.write(';'); file.print(getOBDdata(21)); file.write(';');
+  file.print(getOBDdata(19)); file.write(';');
 #endif
   file.print(total_avg_speed); file.write(';');                                                                   //AVG_SPD       ok
   file.print(100 / getOBDdata(OBD_SPD) * (getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18)); file.write(';');  //LPK_OBD      ok
   file.print(getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18); file.write(';');                                //LPH_OBD    ok
-  file.print(total_fuel_consumption_ee); file.write(';');   //TOTAL_OBD     ok
+  file.print(total_fuel_consumption); file.write(';');   //TOTAL_OBD     ok
   file.print(trip_avg_fuel_consumption); file.write(';');   //!AVG_OBD
   file.print(trip_fuel_consumption); file.write(';');  //!CURR_OBD
   file.print(current_trip);   file.write(';');    //CURR_RUN ok
   file.print(total_trip); file.write(';');//RUN_TOTAL      ok
   file.println();
-  if (!file.sync() || file.getWriteError())  error("write error");
+  file.sync();
 }
 
 void drawScreenSelector(void) {
@@ -259,6 +274,7 @@ void drawScreenSelector(void) {
   else if (CurrentDisplayIDX == 3) drawTimeDistance();
   else if (CurrentDisplayIDX == 4) drawTripTimeDistance();
   else if (CurrentDisplayIDX == 5) drawAllData();
+  else if (CurrentDisplayIDX == 6) drawExtraData();
 } // end drawScreenSelector()
 
 void DrawCurrentFuelConsuption(void) {
@@ -266,7 +282,7 @@ void DrawCurrentFuelConsuption(void) {
   u8g.firstPage();
   do {
     u8g.setFont(u8g_font_profont15r);
-    u8g.drawStr( 0, 15, "CURRENT" );
+    u8g.drawStr( 0, 15, "TRIP" );
     u8g.drawStr( 106, 15, "L" );
     if (LoggingOn == true) u8g.drawStr( 119, 15, "#" );
     u8g.setPrintPos(59, 15) ;
@@ -305,7 +321,7 @@ void DrawTotalFuelConsuption(void) {
     u8g.drawStr( 90, 15, "L" );
     if (LoggingOn == true) u8g.drawStr( 119, 15, "#" );
     u8g.setPrintPos(44, 15) ;
-    u8g.print(total_fuel_consumption_ee, 1);
+    u8g.print(total_fuel_consumption, 1);
     if (getOBDdata(OBD_SPD) > 1)
     {
       u8g.setFont(u8g_font_profont15r);
@@ -433,7 +449,7 @@ void autoscreenchange() {
 }
 void ent() {//ПЕРЕКЛЮЧЕНИЕ ЭКРАНОВ
   CurrentDisplayIDX++;
-  if (CurrentDisplayIDX > 5) CurrentDisplayIDX = 1;
+  if (CurrentDisplayIDX > 6) CurrentDisplayIDX = 1;
   drawScreenSelector();
 }
 
@@ -463,7 +479,7 @@ float getOBDdata(byte OBDdataIDX) {
       //  X*7.732 (мм.рт.ст) (для турбомоторов)
       //  (гр/сек) (данная формула для MAF так и не найдена)
       //  X/255*5 (Вольт) (напряжение на расходомере)
-      returnValue = ToyotaData[OBD_MAP]; //Сырые данные
+      returnValue = ToyotaData[OBD_MAP] * 2; //MAF
       break;
     case OBD_ECT: // Температура двигателя (ECT)
       // В зависимости от величины Х разные формулы:
@@ -502,7 +518,7 @@ float getOBDdata(byte OBDdataIDX) {
     case OBD_TPS: // Положение дроссельной заслонки
       // X/2(градусы)
       // X/1.8(%)
-      returnValue = ToyotaData[OBD_TPS] / 2;
+      returnValue = ToyotaData[OBD_TPS] / 1.8;
       break;
     case OBD_SPD: // Скорость автомобиля (км/час)
       returnValue = ToyotaData[OBD_SPD];
@@ -511,11 +527,13 @@ float getOBDdata(byte OBDdataIDX) {
     case OBD_OXSENS:
       returnValue = (float)ToyotaData[OBD_OXSENS] * 0.01953125;
       break;
-    //Коррекция второй половины
-    /*
-      case OBD_OXSENS2:// Lambda2 tst
+
+#ifdef SECOND_O2SENS
+    case OBD_OXSENS2:// Lambda2 tst
       returnValue = (float)ToyotaData[OBD_OXSENS2] * 0.01953125;
-      break;*/
+      break;
+#endif
+
     //  читаем Байты флагов побитно
     case 11:
       returnValue = bitRead(ToyotaData[11], 0);  //  Переобогащение после запуска 1-Вкл
@@ -547,9 +565,13 @@ float getOBDdata(byte OBDdataIDX) {
     case 20:
       returnValue = bitRead(ToyotaData[14], 4); //Смесь  первой половины 1-Богатая, 0-Бедная
       break;
+
+#ifdef SECOND_O2SENS //Вторая лябмда для Vобразных движков
     case 21:
       returnValue = bitRead(ToyotaData[14], 5); //Смесь второй половины 1-Богатая, 0-Бедная
       break;
+#endif
+
     default: // DEFAULT CASE (in no match to number)
       // send "error" value
       returnValue =  9999.99;
@@ -630,76 +652,47 @@ void ChangeState() {
   } // end (InPacket == false)
 } // end void change
 
-/*
-  void drawExtraData(void) {
-  u8g.setFont(u8g_font_unifontr);
+void drawExtraData(void) {
+  u8g.setFont(u8g_font_profont15r);
   u8g.firstPage();
   do {
-    u8g.drawStr( 0, 17, "O2s" );
-    u8g.setPrintPos(25, 17) ;
-    u8g.print(int(getOBDdata(OBD_OXSENS)));
-
-    //u8g.drawStr( 0, 32, "OX2");
-    //u8g.setPrintPos(25, 32) ;
-    //u8g.print( );
-
-    u8g.drawStr( 0, 47, "SEN");
-    u8g.setPrintPos(25, 47) ;
-    u8g.print( int(getOBDdata(11)));
-
-    u8g.drawStr( 0, 62, "CLD");
-    u8g.setPrintPos(25, 62) ;
-    u8g.print( int(getOBDdata(12)));
-
-    u8g.drawStr( 65, 17, "DET" );
-    u8g.setPrintPos(92, 17) ;
-    u8g.print( int(getOBDdata(13)));
-
-    u8g.drawStr( 65, 32, "FE1");
-    u8g.setPrintPos(92, 32) ;
-    u8g.print( int(getOBDdata(14)));
-
-    u8g.drawStr( 65, 47, "FE2");
-    u8g.setPrintPos(92, 47) ;
-    u8g.print( int(getOBDdata(15)));
-
-    u8g.drawStr( 65, 62, "STR");
-    u8g.setPrintPos(92, 62) ;
-    u8g.print( int(getOBDdata(16)));
-    u8g.drawVLine(63, 0, 64);
+    u8g.drawStr( 0, 15, "VF" );
+    u8g.setPrintPos(25, 15) ;
+    u8g.print(getOBDdata(OBD_OXSENS), 1);
+    if (int(getOBDdata(11)) == 1) {
+      u8g.drawStr( 0, 30, "ASE");
+    }
+    if (int(getOBDdata(12)) == 1) {
+      u8g.drawStr( 0, 45, "CLD");
+    }
+    if (int(getOBDdata(13)) == 1) {
+      u8g.drawStr( 0, 60, "KNK");
+    }
+    if (int(getOBDdata(14)) == 1) {
+      u8g.drawStr( 40, 30, "OL");
+    }
+    if (int(getOBDdata(15)) == 1) {
+      u8g.drawStr( 40, 45, "AE");
+    }
+    if (int(getOBDdata(16)) == 1) {
+      u8g.drawStr( 40, 60, "STA");
+    }
+    if (int(getOBDdata(17)) == 1) {
+      u8g.drawStr( 70, 30, "IDL");
+    }
+    if (int(getOBDdata(18)) == 1) {
+      u8g.drawStr( 70, 45, "A/C");
+    }
+    if (int(getOBDdata(19)) == 1) {
+      u8g.drawStr( 70, 60, "NSW");
+    }
+    if (int(getOBDdata(20)) == 0) {
+      u8g.drawStr(70, 15, "LEAN");
+    } else  {
+      u8g.drawStr(70, 15, "RICH");
+    }
   }
   while ( u8g.nextPage() );
-  }
-*/
-/*
-  void drawExtraFlags(void) {
-  u8g.setFont(u8g_font_unifontr);
-  u8g.firstPage();
-  do {
-    u8g.drawStr( 0, 17, "IDL" );
-    u8g.setPrintPos(25, 17) ;
-    u8g.print(int(getOBDdata(17)));
+}
 
-    u8g.drawStr( 0, 32, "CND");
-    u8g.setPrintPos(25, 32) ;
-    u8g.print( int(getOBDdata(18)));
-
-    u8g.drawStr( 0, 47, "NEU");
-    u8g.setPrintPos(25, 47) ;
-    u8g.print( int(getOBDdata(19)));
-
-    u8g.drawStr( 0, 62, "EN1");
-    u8g.setPrintPos(25, 62) ;
-    u8g.print( int(getOBDdata(20)));
-
-    u8g.drawStr( 65, 17, "EN2" );
-    u8g.setPrintPos(92, 17) ;
-    u8g.print( int(getOBDdata(21)));
-
-    u8g.drawVLine(63, 0, 64);
-  }
-  while ( u8g.nextPage() );
-  }
-
-*/
 

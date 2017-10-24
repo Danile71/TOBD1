@@ -1,0 +1,10 @@
+Вот тут http://alflash.com.ua/Vf1/Vf1Toyota.htm
+есть интересная информация по коррекции топливоподачи (байт 9, 10)
+
+Vf1 Signal     EFI Status     Fuel Trim
+_______________________________
+~ 0 V            Rich               -(11-20) %
+~ 1.25 V      Slight  Rich     - (4-10) %
+~ 2.5  V       Normal           ± (0-3) %
+~ 3.75 V      Slight  Lean    + (4-10) %
+~ 5 V           Lean               + (11-20) %
