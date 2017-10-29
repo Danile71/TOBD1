@@ -10,17 +10,17 @@
 #include <SPI.h>
 #include <EEPROM.h>
 #include <MD_KeySwitch.h>
-#define ADC_VREF_TYPE ((0<<REFS1) | (0<<REFS0) | (0<<ADLAR))  // внутренняяя опора AREF PIN
-//AREF pin - 000
-//AVCC-010
 #define VREF_MEASURED 3.32              //Измеренное опорное напряжение с 3.3В стабилизатора
 
-#define LOGGING_FULL    //Запись на SD всех данных
+// выбрать один вариант логирования
+#define LOGGING_MINIMAL //запись минимума данных
+//#define LOGGING_FULL    //Запись на SD всех данных
+//#define LOGGING_DEBUG    //Запись на SD всех данных + статистику расхода и пробега
 //#define SECOND_O2SENS  // Включение 2го сенсора кислорода для V движков
-#define DEBUG_OUTPUT false // for debug option - swith output to Serial
+#define DEBUG_OUTPUT true // for debug option - swith output to Serial
 
 //DEFINE пинов под входы-выходы
-#define LED_PIN          13
+#define LED_PIN          12
 #define OX_PIN          0 //A0 для сенсора кислорода
 #define TT_PIN          1 //A1 для сенсора ТТ АКПП
 #define ENGINE_DATA_PIN 2 //D2 VF1 PIN
@@ -34,7 +34,7 @@
 
 //DEFINE модуля записи на SD карту
 #define FILE_BASE_NAME "Data"   //шаблон имени файла
-#define error(msg) //sd.errorHalt(F(msg)) //ошибки при работе с SD
+#define error(msg) sd.errorHalt(&Serial,F(msg)) //ошибки при работе с SD
 
 //DEFINE OBD READER
 #define  MY_HIGH  HIGH //LOW    // I have inverted the Eng line using an Opto-Coupler, if yours isn't then reverse these low & high defines.
@@ -81,8 +81,6 @@ unsigned int OX, TT;
 
 volatile uint8_t ToyotaNumBytes, ToyotaID, ToyotaData[TOYOTA_MAX_BYTES];
 volatile uint16_t ToyotaFailBit = 0;
-
-// "names" for the OBD data to make life easier
 boolean LoggingOn = false; // dfeine connection flag and last success packet - for lost connection function.
 
 
@@ -98,13 +96,7 @@ void setup() {
   EEPROM.get(200, odometer);
   EEPROM.get(204, total_inj_dur_ee);
 
-
-  //инициализация АЦП
-  DIDR0 = (0 << ADC5D) | (0 << ADC4D) | (0 << ADC3D) | (0 << ADC2D) | (0 << ADC1D) | (0 << ADC0D);
-  ADMUX = ADC_VREF_TYPE;
-  ADCSRA = (1 << ADEN) | (0 << ADSC) | (0 << ADATE) | (0 << ADIF) | (0 << ADIE) | (1 << ADPS2) | (1 << ADPS1) | (0 << ADPS0);
-  ADCSRB = (0 << ADTS2) | (0 << ADTS1) | (0 << ADTS0);
-
+  analogReference(EXTERNAL);
 
   S.begin();
   S.enableDoublePress(true);
@@ -113,22 +105,39 @@ void setup() {
   S.enableRepeatResult(false);
   S.setDoublePressTime(300);
   S.setLongPressTime(2000);
-
-  if (DEBUG_OUTPUT) {
+  u8g.setFont(u8g_font_profont15r);
+  /*if (DEBUG_OUTPUT) {
     Serial.println("system Started");
     Serial.print("Read float from EEPROM: ");
     Serial.println(total_trip, 3);
     Serial.println(total_time, 3);
     Serial.println(odometer, 1);
     Serial.println(total_inj_dur_ee, 3);
-  }
+    }*/
 
-  if (!sd.begin(SS, SD_SCK_MHZ(50))) {
-    sd.initErrorHalt();
+
+  if (!sd.begin(SS, SPI_FULL_SPEED )) {
+    sd.initErrorHalt(&Serial);
   }
   if (BASE_NAME_SIZE > 6) {
     error("FILE_BASE_NAME too long");
   }
+  if (sd.exists("Data99.csv"))                    //очистка SD карты если логов более 99 штук
+  {
+    u8g.setFont(u8g_font_profont15r);
+    u8g.firstPage();
+    do {
+      u8g.drawStr( 0, 17, "WIPE DATA!" );
+    } while ( u8g.nextPage() );
+
+    if (!sd.wipe()) {
+      sd.errorHalt("Wipe failed.");
+    }
+    if (!sd.begin(SS, SPI_FULL_SPEED )) {
+      sd.initErrorHalt();
+    }
+  }
+
   while (sd.exists(fileName)) {
     if (fileName[BASE_NAME_SIZE + 1] != '9') {
       fileName[BASE_NAME_SIZE + 1]++;
@@ -207,33 +216,33 @@ void loop(void) {
 
       if (LoggingOn == true) logData();         //запись в лог данных по двоному нажатию на кнопку
 
-      updateEepromData();
+      updateEepromData();   //запись данных при остановке
 
-      if (t - last_log_time > 180000) {        //Запись данных в EEPROM каждые 3 минуты. Чтобы не потерять данные при движении на трассе
+      if (millis() - last_log_time > 180000) {        //Запись данных в EEPROM каждые 3 минуты. Чтобы не потерять данные при движении на трассе
         EEPROM.put(104, total_trip);
         EEPROM.put(108, total_time);
         EEPROM.put(200, odometer);
         EEPROM.put(204, total_inj_dur_ee);
-        last_log_time = t;
+        last_log_time = millis();
       }
     }
     drawScreenSelector(); // draw screen
     ToyotaNumBytes = 0;     // reset the counter.
   } // end if (ToyotaNumBytes > 0)
-  if (t % 50 == 0 && LoggingOn == true) {   //каждые 50мс
-    OX = read_adc(OX_PIN);
+  if (millis() % 50 == 0 && LoggingOn == true && CurrentDisplayIDX == 6) { //каждые 50мс, когда включено логирование и выбран экран с флагами(!)
+    OX = analogRead(OX_PIN);
     if (OX < 400) { //исключаю ложные показание > ~1.3В
       file.write(';');
       file.print(((float)OX * VREF_MEASURED) / 1024, 3 );
       file.println();
     }
   }
-  if (t % 500 == 0) {  //каждые пол секунды читаем состояние АКПП
-    TT = read_adc(TT_PIN);
+  if (millis() % 500 == 0) {  //каждые пол секунды читаем состояние АКПП
+    TT = analogRead(TT_PIN);
     TT_curr = (int)(TT * VREF_MEASURED / 1024 * 3.13 + 0.5);
     if (TT_last != TT_curr) {
       drawScreenSelector();
-      TT_curr = TT_last;
+      TT_last = TT_curr;
     }
     //Serial.println((float)TT * VREF_MEASURED / 1024 * 3.13, 3);
     // Serial.println((int)(TT * VREF_MEASURED / 1024 * 3.13+0.5));
@@ -271,8 +280,12 @@ void cleardata() {
 void writeHeader() {
 #ifdef LOGGING_FULL
   file.print(F(";OX_RAW;INJ TIME;IGN;IAC;RPM;MAP;ECT;TPS;SPD;VF1;OX;ASE;COLD;KNOCK;OPEN LOOP;Acceleration Enrichment;STARTER;IDLE;A/C;NEUTRAL;AVG SPD;LPK_OBD;LPH_OBD;TOTAL_OBD;AVG_OBD;CURR_OBD;CURR_RUN;total_trip"));
-#else
+#endif
+#ifdef LOGGING_DEBUG
   file.print(F(";OX_RAW;INJ TIME;IGN;IAC;RPM;MAP;ECT;TPS;SPD;VF1;OX;AVG SPD;LPK_OBD;LPH_OBD;TOTAL_OBD;AVG_OBD;CURR_OBD;CURR_RUN;total_trip"));
+#endif
+#ifdef LOGGING_MINIMAL
+  file.print(F(";OX_RAW;INJ TIME;IGN;IAC;RPM;MAP;ECT;TPS;SPD;VF1;OX;LPH_OBD"));
 #endif
   file.println();
   file.sync();
@@ -291,14 +304,18 @@ void logData() {
   file.print(getOBDdata(15)); file.write(';'); file.print(getOBDdata(16)); file.write(';'); file.print(getOBDdata(17)); file.write(';'); file.print(getOBDdata(18)); file.write(';');
   file.print(getOBDdata(19)); file.write(';');
 #endif
-  file.print(total_avg_speed); file.write(';');                                                                   //AVG_SPD       ok
-  file.print(100 / getOBDdata(OBD_SPD) * (getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18)); file.write(';');  //LPK_OBD      ok
+#ifdef  LOGGING_DEBUG
+  // file.print(total_avg_speed); file.write(';');                                                                   //AVG_SPD       ok
+  // file.print(100 / getOBDdata(OBD_SPD) * (getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18)); file.write(';');  //LPK_OBD      ok
+#endif
   file.print(getOBDdata(OBD_INJ) * getOBDdata(OBD_RPM)*Ls * 0.18); file.write(';');                                //LPH_OBD    ok
-  file.print(total_fuel_consumption); file.write(';');   //TOTAL_OBD     ok
-  file.print(trip_avg_fuel_consumption); file.write(';');   //!AVG_OBD
-  file.print(trip_fuel_consumption); file.write(';');  //!CURR_OBD
-  file.print(current_trip);   file.write(';');    //CURR_RUN ok
-  file.print(total_trip); file.write(';');//RUN_TOTAL      ok
+#ifdef LOGGING_DEBUG
+  //file.print(total_fuel_consumption); file.write(';');   //TOTAL_OBD     ok
+  //file.print(trip_avg_fuel_consumption); file.write(';');   //!AVG_OBD
+  // file.print(trip_fuel_consumption); file.write(';');  //!CURR_OBD
+  //file.print(current_trip);   file.write(';');    //CURR_RUN ok
+  //file.print(total_trip); file.write(';');//RUN_TOTAL      ok
+#endif
   file.println();
   file.sync();
 }
@@ -318,10 +335,13 @@ void DrawCurrentFuelConsuption(void) {
   do {
     u8g.setFont(u8g_font_profont15r);
     u8g.drawStr( 0, 15, "TRIP" );
-    u8g.drawStr( u8g.getStrWidth("TRIP  00.0") + 4, 15, "L" );
-    u8g.setPrintPos(u8g.getStrWidth("TRIP  ") + 2, 15) ;
+    u8g.drawStr( 74, 15, "L" );
+    u8g.setPrintPos(35, 15) ;
     u8g.print(trip_fuel_consumption, 1);
     if (LoggingOn == true)  u8g.drawHLine(20, 24, 88);
+    u8g.setPrintPos(90, 20) ;
+    u8g.print((float)TT * VREF_MEASURED / 1024 * 3.13, 2);
+/*
     u8g.setFont(u8g_font_profont22r);
     switch (TT_curr) { //для делителя 10k + 4.7k
       case 0: u8g.drawStr( 95, 20, "1" );   break;
@@ -330,7 +350,7 @@ void DrawCurrentFuelConsuption(void) {
       case 5: u8g.drawStr( 95, 20, "3L" ); break;
       case 6: u8g.drawStr( 95, 20, "4" ); break;
       case 7: u8g.drawStr( 95, 20, "4L" ); break;
-    }
+    }*/
     if (getOBDdata(OBD_SPD) > 1)
     {
       u8g.setFont(u8g_font_profont15r);
@@ -362,8 +382,8 @@ void DrawTotalFuelConsuption(void) {
   do {
     u8g.setFont(u8g_font_profont15r);
     u8g.drawStr( 0, 15, "TOTAL" );
-    u8g.drawStr( 90, 15, "L" );
-    u8g.setPrintPos(44, 15) ;
+    u8g.drawStr( 74, 15, "L" );
+    u8g.setPrintPos(42, 15) ;
     u8g.print(total_fuel_consumption, 1);
     if (LoggingOn == true)  u8g.drawHLine(20, 24, 88);
     u8g.setFont(u8g_font_profont22r);
@@ -406,7 +426,7 @@ void drawTimeDistance(void) {
   do {
     u8g.setFont(u8g_font_profont15r);
     u8g.drawStr( 0, 15, "TOTAL" );
-    u8g.drawStr( 90, 15, "KM" );
+    //u8g.drawStr( 90, 15, "KM" );
     u8g.setPrintPos(44, 15) ;
     u8g.print(total_trip, 1);
     if (LoggingOn == true)  u8g.drawHLine(20, 24, 88);
@@ -440,7 +460,7 @@ void drawTripTimeDistance(void) {
   do {
     u8g.setFont(u8g_font_profont15r);
     u8g.drawStr( 0, 15, "TRIP" );
-    u8g.drawStr( 90, 15, "KM" );
+    //u8g.drawStr( 90, 15, "KM" );
     u8g.setPrintPos(44, 15) ;
     u8g.print(current_trip, 1);
     if (LoggingOn == true)  u8g.drawHLine(20, 24, 88);
@@ -467,6 +487,7 @@ void drawTripTimeDistance(void) {
   }
   while ( u8g.nextPage() );
 }
+
 
 
 
@@ -762,14 +783,4 @@ void drawExtraData(void) {
     }
   }
   while ( u8g.nextPage() );
-}
-
-unsigned int read_adc(unsigned char adc_input)
-{
-  ADMUX = adc_input | ADC_VREF_TYPE;
-  delay(10);
-  ADCSRA |= (1 << ADSC);
-  while ((ADCSRA & (1 << ADIF)) == 0);
-  ADCSRA |= (1 << ADIF);
-  return ADCW;
 }
