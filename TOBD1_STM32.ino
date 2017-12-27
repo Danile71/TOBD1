@@ -29,8 +29,8 @@
 
 //DEFINE пинов под входы-выходы
 //#define LED_PIN         33  //встроенный светодиод
-//#define OX_PIN          3 //D3-PB0 для сенсора кислорода
-//#define TT_PIN          8 //D8-PA3 для сенсора ТТ АКПП
+#define OX_PIN          PB0 //D3-PB0 для сенсора кислорода
+#define TT_PIN          PA3 //D8-PA3 для сенсора ТТ АКПП
 #define ENGINE_DATA_PIN PB4 //D18-PB5-EXTI5 VF1 PIN
 //#define TOGGLE_BTN_PIN  18 // D4 screen change PIN
 #define TFT_CS         PA4
@@ -45,7 +45,7 @@
 
 //DEFINE констант расходомера
 #define Ls 0.004020653 //производительсность форсунки литров в секунду // базовый 0.004 или 240cc
-#define Ncyl 6 //кол-во цилиндров
+#define Ncyl 6.0 //кол-во цилиндров
 
 //DEFINE OBD READER
 #define  MY_HIGH  HIGH //LOW    // I have inverted the Eng line using an Opto-Coupler, if yours isn't then reverse these low & high defines.
@@ -77,7 +77,7 @@ float total_km = 0;
 float total_avg_consumption;
 float total_avg_speed;
 uint32_t total_time = 0;
-
+boolean _isLPK = false;
 
 
 float trip_fuel_consumption = 0;
@@ -115,6 +115,24 @@ volatile uint16_t ToyotaFailBit = 0;
 uint32_t targetTime = 0;
 uint8_t hh, mm, ss;
 uint8_t omm, ohh;
+
+
+
+float sx = 0, sy = 1, mx = 1, my = 0, hx = -1, hy = 0;    // Saved H, M, S x & y multipliers
+float sdeg = 0, mdeg = 0, hdeg = 0;
+uint16_t osx = 120, osy = 120, omx = 120, omy = 120, ohx = 120, ohy = 120; // Saved H, M, S x & y coords
+uint16_t x00 = 0, x11 = 0, y00 = 0, y11 = 0;
+boolean initial = 1, clock_init = 0;
+
+
+
+
+
+
+
+
+
+
 //конструкторы
 
 
@@ -122,8 +140,8 @@ Adafruit_ILI9341_STM tft = Adafruit_ILI9341_STM(TFT_CS, TFT_DC); // Use hardware
 //Creating object for FRAM chip
 //chipaddress, write protect status, write protect pin, chipDensity
 FRAM24CXX FRAM(0x50, 4);
-uRTCLib rtc(0x68, 0x57);
-URTouch  Touch( PB13, PB3, PB15, PB14, PA8);
+uRTCLib rtc(0x68);
+URTouch  Touch( PB13, PB12, PB15, PB14, PA8);
 // Color definitions
 #define BLACK    0x0000
 #define BLUE     0x001F
@@ -133,7 +151,6 @@ URTouch  Touch( PB13, PB3, PB15, PB14, PA8);
 #define MAGENTA  0xF81F
 #define YELLOW   0xFFE0
 #define WHITE    0xFFFF
-
 
 #define BG_COLOR BLACK
 void setup() {
@@ -145,9 +162,10 @@ void setup() {
   FRAM.begin();
   Touch.InitTouch(0);
   Touch.setPrecision(PREC_EXTREME);
+  delay(50);
   myHeight   = tft.height();
   myWidth  = tft.width() ;
-    //tft.drawCircle(140, 120, 180, ILI9341_YELLOW);
+  //tft.drawCircle(140, 120, 180, ILI9341_YELLOW);
   //Serial.println("Writeng to FRAM...");
   //FRAM.write(0, float(260000.10));
   //FRAM.writeLong(4, 13154464);
@@ -162,10 +180,11 @@ void setup() {
   Serial.println(odometer);
   Serial.println(total_inj_dur_ee, 3);
   //second, minute, hour, dayOfWeek, dayOfMonth, month, year
-  // rtc.set(0, 12, 19, 2, 26, 12, 17);
+  // rtc.set(0, 04, 20, 3, 27, 12, 17);
+  rtc.refresh();
   mm = rtc.minute();
   hh = rtc.hour();
-
+  ss = rtc.second();
   /*if (DEBUG_OUTPUT) {
     Serial.println("system Started");
     Serial.print("Read float from EEPROM: ");
@@ -179,8 +198,8 @@ void setup() {
   //  writeHeader();
   pinMode(ENGINE_DATA_PIN, INPUT); // VF1 PIN
   // pinMode(LED_PIN, OUTPUT);
-  //  pinMode(TT_PIN, INPUT_ANALOG);
-  //  pinMode(OX_PIN, INPUT_ANALOG);
+  pinMode(TT_PIN, INPUT_ANALOG);
+  pinMode(OX_PIN, INPUT_ANALOG);
   attachInterrupt(ENGINE_DATA_PIN, ChangeState, CHANGE); //setup Interrupt for data line
   CurrentDisplayIDX = 1; // set to display 1
   //Расходомер
@@ -195,6 +214,7 @@ void loop(void) {
   unsigned int diff_t;
   rtc.refresh();
   readTouch();
+
   if (targetTime < millis()) {
     targetTime = millis() + 1000;
     ss++;              // Advance second
@@ -270,149 +290,245 @@ void loop(void) {
   }
 
   if (millis() % 500 == 0) {  //каждые пол секунды читаем состояние АКПП
-    //    TT = analogRead(TT_PIN);
-    //  TT_curr = (int)(TT * VREF_MEASURED * TT_PIN_DIVIDER / 1024  + 0.5);
-    //    drawScreenSelector();
-    // if (TT_last != TT_curr) {
-    //      drawScreenSelector();
-    //  TT_last = TT_curr;
-    //}
-    //Serial.println((float)TT * VREF_MEASURED / 1024 * 3.13, 3);
-    // Serial.println((int)(TT * VREF_MEASURED / 1024 * 3.13+0.5));
+    TT = analogRead(TT_PIN);
+    TT_curr = (int)(TT * VREF_MEASURED * TT_PIN_DIVIDER / 4095.0  + 0.5);
+    drawScreenSelector();
+    //  Serial.println((float)TT * VREF_MEASURED / 4095.0 * TT_PIN_DIVIDER, 3);
+    //  Serial.println((int)(TT * VREF_MEASURED / 4095.0 * TT_PIN_DIVIDER + 0.5));
   }
 }
 
-//  if (millis() % 5000 < 50) autoscreenchange();      // ротация экранов
-
-
-
-
 
 void mainscreen(void) {
+
+
   tft.setTextColor(ILI9341_GREEN);
   tft.setFont(&CPMono_v07_Light6pt7b );
   if (isActive == false) {                      //если первый раз экран появился то рисуются подписи
-    tft.setCursor(165, 13);
-    tft.print("Instant");
-    tft.setCursor(165, 234);
+    tft.setCursor(16, 90);
+    tft.print("Trip fuel");
+    tft.setCursor(16, 146);
+    tft.print("Coolant temp");
+    tft.setCursor(196, 90);
+    tft.print("Instant fuel");
+    tft.setCursor(196, 146);
     tft.print("Average trip");
-    tft.setCursor(12, 187);
-    tft.print("Trip");
-    tft.setCursor(12, 234);
-    tft.print("fuel consumed");
-    tft.setCursor(13, 13);
-    tft.print("Coolant");
-    tft.setCursor(38, 57);
-    tft.print("temp");
-
-    tft.setCursor(236, 40);
     tft.setFont(&CPMono_v07_Plain9pt7b );
-    if (OBDDATA[OBD_SPD] > 1)        //если есть движение то литры на 100км
-      send_tft("LPK", 0);
-    else                     //если стоим то литры в час
-      send_tft("LPH", 0);
-    tft.setCursor(236, 221);
+    tft.setCursor(112, 120);
+    tft.print("L");
+    tft.setCursor(112, 182);
+    tft.print("C");
+    tft.drawCircle(106, 170, 3, ILI9341_GREEN);
+    tft.setCursor(265, 182);
     tft.print("LPK");
+    tft.setCursor(265, 120);
+    if (OBDDATA[OBD_SPD] > 1)       //если есть движение то литры на 100км
+      tft.print("LPK");
+    if (OBDDATA[OBD_SPD] < 1)   //если стоим то литры в час
+      tft.print("LPH");
 
+
+    tft.setFont(&ticking_timebomb20pt7b);
+    tft.setCursor(16, 120);
+    tft.print(trip_fuel_consumption, 1 );
+
+    tft.setCursor(16, 182);
     if (OBDDATA[OBD_ECT] < 50)
       tft.setTextColor(ILI9341_BLUE);
     else if (OBDDATA[OBD_ECT] < 99) tft.setTextColor(ILI9341_GREEN);
     else tft.setTextColor(ILI9341_RED);
-    tft.setFont(&ticking_timebomb20pt7b);
-    tft.setCursor(13, 43);
     tft.print(OBDDATA[OBD_ECT], 1);
 
     tft.setTextColor(ILI9341_GREEN);
-    tft.setCursor(165, 43);
+    tft.setCursor(188, 120);
     if (OBDDATA[OBD_SPD] > 1)        //если есть движение то литры на 100км
       tft.print(maindata[0], 1);
     else tft.print( maindata[1] , 1); //иначе литры в час
 
-    tft.setCursor(165, 220);
+    tft.setCursor(188, 182);
     if (trip_avg_fuel_consumption < 100)
       tft.print(trip_avg_fuel_consumption, 1);
     else
       tft.print( "99.9");
 
-    tft.setCursor(12, 220);
-    tft.print(trip_fuel_consumption, 1 );
-
     tft.setFont(&DSEG7ModernMini_Bold30pt7b);
-    tft.setCursor(100, 85);
-    /*  switch (TT_curr) { //для делителя 10k + 4.7k
-        case 0: tft.print("1");   break;
-        case 2: tft.print("2"); break;
-        case 4: tft.print("3"); break;
-        case 5: tft.print("3L"); break;
-        case 6: tft.print("4"); break;
-        case 7: tft.print("4L"); break;
-      }*/
-    tft.print("4");
-    tft.setFont(&ticking_timebomb20pt7b);
-    tft.setCursor(138, 84);
-    tft.print("LOCK");
-    /*  tft.setFont(&ticking_timebomb40pt7b);
-      tft.setCursor(79, 154);
-      tft.print(rtc.hour());
-      tft.print(":");
-      tft.print(rtc.minute());*/
-    // если экран не меняется то подписи не обновляются
-  }
-  tft.setFont(&ticking_timebomb20pt7b);
+    showtime();
+    tft.drawRoundRect(8, 75, 128, 55, 12, ILI9341_RED);
+    tft.drawRoundRect(8, 134, 128, 55, 12, ILI9341_RED);
+    tft.drawRoundRect(184, 75, 130, 55, 12, ILI9341_RED);
+    tft.drawRoundRect(184, 134, 130, 55, 12, ILI9341_RED);
+    switch (TT_curr) { //для делителя 10k + 4.7k
+      case 0:
+        {
+          tft.fillRoundRect(149, 180, 20, 28, 3, ILI9341_RED);    //первая передача
+        } break;
+      case 2:
+        {
+          tft.fillRoundRect(149, 180, 20, 28, 3, ILI9341_RED);    //первая передача
+          tft.fillRoundRect(149, 145, 20, 28, 3, ILI9341_RED);   //вторая передача
+        } break;
+      case 4:
+        {
+          tft.fillRoundRect(149, 180, 20, 28, 3, ILI9341_RED);    //первая передача
+          tft.fillRoundRect(149, 145, 20, 28, 3, ILI9341_RED);   //вторая передача
+          tft.fillRoundRect(149, 110, 20, 28, 3, ILI9341_RED);  //третья передача
+        } break;
+      case 5: {
+          tft.fillRoundRect(146, 105, 26, 109, 5, ILI9341_GREEN); //gt lock
+          tft.fillRoundRect(149, 180, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 145, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 110, 20, 28, 3, ILI9341_RED);
+        } break;
+      case 6:
+        {
+          tft.fillRoundRect(149, 180, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 145, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 110, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 75, 20, 28, 3, ILI9341_RED);
+        } break;
+      case 7:
+        {
+          tft.fillRoundRect(146, 70, 26, 144, 5, ILI9341_GREEN);
+          tft.fillRoundRect(149, 180, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 145, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 110, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 75, 20, 28, 3, ILI9341_RED);
+        } break;
+    }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+  }// если экран не меняется то подписи не обновляются
+
+
+  if (TT_last != TT_curr) {
+    switch (TT_curr) { //для делителя 10k + 4.7k
+      case 0:
+        {
+          tft.fillRoundRect(146, 70, 26, 144, 5, ILI9341_BLACK);
+          tft.fillRoundRect(149, 180, 20, 28, 3, ILI9341_RED);    //первая передача
+        } break;
+      case 2:
+        {
+          tft.fillRoundRect(146, 70, 26, 144, 5, ILI9341_BLACK);
+          tft.fillRoundRect(149, 180, 20, 28, 3, ILI9341_RED);    //первая передача
+          tft.fillRoundRect(149, 145, 20, 28, 3, ILI9341_RED);   //вторая передача
+        } break;
+      case 4:
+        {
+          tft.fillRoundRect(146, 70, 26, 144, 5, ILI9341_BLACK);
+          tft.fillRoundRect(149, 180, 20, 28, 3, ILI9341_RED);    //первая передача
+          tft.fillRoundRect(149, 145, 20, 28, 3, ILI9341_RED);   //вторая передача
+          tft.fillRoundRect(149, 110, 20, 28, 3, ILI9341_RED);  //третья передача
+        } break;
+      case 5: {
+          tft.fillRoundRect(146, 70, 26, 144, 5, ILI9341_BLACK);
+          tft.fillRoundRect(146, 105, 26, 109, 5, ILI9341_GREEN); //gt lock
+          tft.fillRoundRect(149, 180, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 145, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 110, 20, 28, 3, ILI9341_RED);
+        } break;
+      case 6:
+        {
+          tft.fillRoundRect(146, 70, 26, 144, 5, ILI9341_BLACK);
+          tft.fillRoundRect(149, 180, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 145, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 110, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 75, 20, 28, 3, ILI9341_RED);
+        } break;
+      case 7:
+        {
+          tft.fillRoundRect(146, 70, 26, 144, 5, ILI9341_GREEN);
+          tft.fillRoundRect(149, 180, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 145, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 110, 20, 28, 3, ILI9341_RED);
+          tft.fillRoundRect(149, 75, 20, 28, 3, ILI9341_RED);
+        } break;
+    }
+
+  }
+  //  Serial.println((float)TT * VREF_MEASURED / 4095.0 * TT_PIN_DIVIDER, 3);
+  //  Serial.println((int)(TT * VREF_MEASURED / 4095.0 * TT_PIN_DIVIDER + 0.5));
+  tft.setFont(&CPMono_v07_Plain9pt7b );
+  tft.setCursor(2, 220);
+  tft.fillRect(2, 220 - 19, 140, 20, ILI9341_BLACK);
+  tft.print("TT=");
+  tft.print((float)TT * VREF_MEASURED / 4095.0 * TT_PIN_DIVIDER, 1);
+  tft.print("Gear=");
+  tft.print(TT_curr);
+  TT_last = TT_curr;
   maindata[0] = 100  * (OBDDATA[OBD_INJ] * OBDDATA[OBD_RPM] / OBDDATA[OBD_SPD] * Ls * 0.18);  //LPK
   maindata[1] = OBDDATA[OBD_INJ] * OBDDATA[OBD_RPM] * Ls * 0.18;    //LPH
   maindata[2] = trip_avg_fuel_consumption;
   maindata[3] = trip_fuel_consumption;
 
+  tft.setFont(&ticking_timebomb20pt7b);
+  tft.setCursor(16, 120);
+  if (maindata[3] != maindataold[3])
+    send_tft(String ( trip_fuel_consumption, 1), 20);
+
   if (OBDDATA[OBD_ECT] < 50)
     tft.setTextColor(ILI9341_BLUE);
   else if (OBDDATA[OBD_ECT] < 99) tft.setTextColor(ILI9341_GREEN);
   else tft.setTextColor(ILI9341_RED);
-  tft.setCursor(13, 43);
+  tft.setCursor(16, 182);
   if (OBDDATA[OBD_ECT] != OLDOBDDATA[OBD_ECT])
     send_tft(String ( OBDDATA[OBD_ECT], 1), 10);
 
 
   tft.setTextColor(ILI9341_GREEN);
-  tft.setCursor(165, 43);
+
   if (OBDDATA[OBD_SPD] > 1)       //если есть движение то литры на 100км
+  {
+    if (_isLPK == false)
+    {
+      tft.setCursor(265, 120);
+      tft.setFont(&CPMono_v07_Plain9pt7b );
+      send_tft("LPK", 0);
+      _isLPK = true;
+    }
     if (maindata[0] != maindataold[0])
+    {
+      tft.setCursor(188, 120);
+      tft.setFont(&ticking_timebomb20pt7b);
       send_tft(String ( maindata[0], 1), 20);
-  if (OBDDATA[OBD_SPD] < 1)
+    }
+  }
+  if (OBDDATA[OBD_SPD] < 1)   //если стоим то литры в час
+  {
+    if (_isLPK == true)
+    {
+      tft.setCursor(265, 120);
+      tft.setFont(&CPMono_v07_Plain9pt7b );
+      send_tft("LPH", 0);
+      _isLPK = false;
+    }
     if (maindata[1] != maindataold[1])
-      send_tft(String ( maindata[1], 1), 20);   //иначе литры в час
-  tft.setCursor(165, 220);
+    {
+      tft.setCursor(188, 120);
+      tft.setFont(&ticking_timebomb20pt7b);
+      send_tft(String ( maindata[1], 1), 20);
+    }
+  }
+
+  tft.setCursor(188, 182);
   if (trip_avg_fuel_consumption < 100)
     if (maindata[2] != maindataold[2])
       send_tft(String ( trip_avg_fuel_consumption, 1), 20);
   if (trip_avg_fuel_consumption > 100)
     if (maindata[2] != maindataold[2])
       send_tft("99.9", 20);
-
-  tft.setCursor(12, 220);
-  if (maindata[3] != maindataold[3])
-    send_tft(String ( trip_fuel_consumption, 1), 20);
-
-  tft.setFont(&DSEG7ModernMini_Bold30pt7b);
-  tft.setCursor(100, 85);
-  /*  switch (TT_curr) { //для делителя 10k + 4.7k
-      case 0: tft.print("1");   break;
-      case 2: tft.print("2"); break;
-      case 4: tft.print("3"); break;
-      case 5: tft.print("3L"); break;
-      case 6: tft.print("4"); break;
-      case 7: tft.print("4L"); break;
-    }*/
-
-  //  tft.fillRect(98, 33, 34, 55, ILI9341_BLACK);
-  tft.print("4");
-
-  tft.setFont(&ticking_timebomb20pt7b);
-  tft.setCursor(138, 84);
-  //tft.fillRect(137, 56, 78, 33, ILI9341_BLACK);
-  tft.print("LOCK");
-
 
   showtime();
   isActive = true;
@@ -724,14 +840,14 @@ void readTouch() {
   }
 
   if ((touchX >  200) && (Touch.dataAvailable()))
-    if (CurrentDisplayIDX < 2) {
+    if (CurrentDisplayIDX < 3) {
       CurrentDisplayIDX++;
       tft.fillScreen(ILI9341_BLACK);
       isActive = false;
       Serial.println(isActive);
       drawScreenSelector();
     }
-    else CurrentDisplayIDX = 2;
+    else CurrentDisplayIDX = 3;
 
   if ((touchX < 100) && (Touch.dataAvailable()))
     if (CurrentDisplayIDX > 1) {
@@ -742,6 +858,7 @@ void readTouch() {
       drawScreenSelector();
     }
     else CurrentDisplayIDX = 1;
+  
 }
 //-------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------
@@ -877,7 +994,7 @@ void showtime()
   uint16_t W1, H1;
 
   tft.setFont(&DSEG7ModernMini_Bold30pt7b  );
-  tft.setCursor(49, 154);
+  tft.setCursor(57, 60);
   if (omm == rtc.minute())
   {
     if (rtc.hour() < 10) tft.print("0");
@@ -915,5 +1032,8 @@ void showtime()
 
 
 }
+
+
+
 
 
