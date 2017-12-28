@@ -156,6 +156,7 @@ URTouch  Touch( PB13, PB12, PB15, PB14, PA8);
 void setup() {
   Serial.begin(115200);
   //  while (!Serial) ; //wait until Serial ready
+  Wire.begin();
   tft.begin();
   tft.setRotation(3);
   tft.setTextColor(ILI9341_GREEN);
@@ -181,10 +182,8 @@ void setup() {
   Serial.println(total_inj_dur_ee, 3);
   //second, minute, hour, dayOfWeek, dayOfMonth, month, year
   // rtc.set(0, 04, 20, 3, 27, 12, 17);
-  rtc.refresh();
-  mm = rtc.minute();
-  hh = rtc.hour();
-  ss = rtc.second();
+
+
   /*if (DEBUG_OUTPUT) {
     Serial.println("system Started");
     Serial.print("Read float from EEPROM: ");
@@ -206,6 +205,10 @@ void setup() {
   t = millis();
   last_log_time = millis();
   tft.fillScreen(BG_COLOR);
+  rtc.refresh();
+  mm = rtc.minute();
+  hh = rtc.hour();
+  ss = rtc.second();
   targetTime = millis() + 1000;
 } // END VOID SETUP
 
@@ -709,23 +712,23 @@ void getOBD() {
   OBDDATA[OBD_IAC] = ToyotaData[OBD_IAC + 1] * 0.39215;          //3
   OBDDATA[OBD_RPM] = ToyotaData[OBD_RPM + 1] * 25;               //4
   OBDDATA[OBD_MAP] = ToyotaData[OBD_MAP + 1] * 2; //MAF            5
-  if (ToyotaData[OBD_ECT] >= 243)
+  if (ToyotaData[OBD_ECT + 1] >= 243)
     OBDDATA[OBD_ECT] = ((float)(ToyotaData[OBD_ECT + 1] - 243) * 9.8) + 122;
-  else if (ToyotaData[OBD_ECT] >= 237)
+  else if (ToyotaData[OBD_ECT + 1] >= 237)
     OBDDATA[OBD_ECT] = ((float)(ToyotaData[OBD_ECT + 1] - 237) * 3.83) + 99;
-  else if (ToyotaData[OBD_ECT] >= 228)
+  else if (ToyotaData[OBD_ECT + 1] >= 228)
     OBDDATA[OBD_ECT] = ((float)(ToyotaData[OBD_ECT + 1] - 228) * 2.11) + 80.0;
-  else if (ToyotaData[OBD_ECT] >= 210)
+  else if (ToyotaData[OBD_ECT + 1] >= 210)
     OBDDATA[OBD_ECT] = ((float)(ToyotaData[OBD_ECT + 1] - 210) * 1.11) + 60.0;
-  else if (ToyotaData[OBD_ECT] >= 180)
+  else if (ToyotaData[OBD_ECT + 1] >= 180)
     OBDDATA[OBD_ECT] = ((float)(ToyotaData[OBD_ECT + 1] - 180) * 0.67) + 40.0;
-  else if (ToyotaData[OBD_ECT] >= 135)
+  else if (ToyotaData[OBD_ECT + 1] >= 135)
     OBDDATA[OBD_ECT] = ((float)(ToyotaData[OBD_ECT + 1] - 135) * 0.44) + 20.0;
-  else if (ToyotaData[OBD_ECT] >= 82)
+  else if (ToyotaData[OBD_ECT + 1] >= 82)
     OBDDATA[OBD_ECT] = ((float)(ToyotaData[OBD_ECT + 1] - 82) * 0.38);
-  else if (ToyotaData[OBD_ECT] >= 39)
+  else if (ToyotaData[OBD_ECT + 1] >= 39)
     OBDDATA[OBD_ECT] = ((float)(ToyotaData[OBD_ECT + 1] - 39) * 0.47) - 20.0;
-  else if (ToyotaData[OBD_ECT] >= 15)
+  else if (ToyotaData[OBD_ECT + 1] >= 15)
     OBDDATA[OBD_ECT] = ((float)(ToyotaData[OBD_ECT + 1] - 15) * 0.83) - 40.0;
   else
     OBDDATA[OBD_ECT] = ((float)(ToyotaData[OBD_ECT + 1] - 15) * 2.0) - 60.0; // 6
@@ -858,7 +861,7 @@ void readTouch() {
       drawScreenSelector();
     }
     else CurrentDisplayIDX = 1;
-  
+
 }
 //-------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------
