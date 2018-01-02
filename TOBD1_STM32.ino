@@ -79,7 +79,7 @@ float trip_inj_dur = 0;
 float trip_avg_speed;
 float trip_km = 0;
 float odometerRO;
-
+uint16_t old_trip_km = 0;
 float cycle_obd_inj_dur = 0;
 float cycle_trip = 0;
 
@@ -87,7 +87,7 @@ uint32_t trip_time = 0;
 uint32_t total_time_RO = 0;
 uint32_t t;
 uint32_t last_log_time = 0;
-
+uint32_t press_time;
 
 bool flagNulSpeed = true, isActive = false;
 boolean LoggingOn = false;
@@ -173,24 +173,25 @@ void setup() {
   CurrentDisplayIDX = 2; // set to display 2
   //Расходомер
   t = millis();
+  delay (2000);
   last_log_time = millis();
+  press_time = millis();
   rtc.refresh();
   omm = rtc.minute();
   writeHeader();
   LoggingOn = true;
-  delay (2000);
   tft.fillScreen(BG_COLOR);
-  buttons[0].initButtonUL(&tft, 20, 10, 50, 50, ILI9341_WHITE, ILI9341_GREEN, ILI9341_WHITE, (char *)"X", 11 );
-  buttons[1].initButtonUL(&tft, 20, 80, 50, 50, ILI9341_WHITE, ILI9341_GREEN, ILI9341_WHITE, (char *) "-", 11);
-  buttons[2].initButtonUL(&tft, 250, 80, 50, 50, ILI9341_WHITE, ILI9341_GREEN, ILI9341_WHITE, (char *)"+", 11);
-  buttons[3].initButtonUL(&tft, 20, 170, 100, 50, ILI9341_WHITE, ILI9341_GREEN, ILI9341_WHITE, (char *) "Prev", 11);
-  buttons[4].initButtonUL(&tft, 200, 170, 100, 50, ILI9341_WHITE, ILI9341_GREEN, ILI9341_WHITE, (char *) "Next", 11);
-  buttons[5].initButtonUL(&tft, 270, 190, 50, 50, ILI9341_RED, ILI9341_GREEN, ILI9341_BLACK, (char *) ">", 11 );
-  buttons[6].initButtonUL(&tft, 0, 0, 50, 50, ILI9341_RED, ILI9341_GREEN, ILI9341_BLACK, (char *) "<", 11 );
-  buttons[7].initButtonUL(&tft, 0, 210, 30, 30, ILI9341_GREEN, ILI9341_RED, ILI9341_BLACK, (char *)"X", 11 );
-  buttons[8].initButtonUL(&tft, 270, 120, 50, 50, ILI9341_RED, ILI9341_GREEN, ILI9341_BLACK, (char *) ">", 11 );
-  buttons[9].initButtonUL(&tft, 270, 0, 50, 50, ILI9341_WHITE, ILI9341_GREEN, ILI9341_WHITE, (char *)">", 11);
-  buttons[10].initButtonUL(&tft, 270, 120, 50, 50, ILI9341_WHITE, ILI9341_GREEN, ILI9341_WHITE, (char *) "<", 11);
+  buttons[0].initButtonUL(&tft, 20, 10, 50, 50, ILI9341_RED, ILI9341_GREEN, ILI9341_BLACK, (char *)"X", 11 ); //экран настроек
+  buttons[1].initButtonUL(&tft, 20, 80, 50, 50, ILI9341_RED, ILI9341_GREEN, ILI9341_BLACK, (char *) "-", 11); //экран настроек
+  buttons[2].initButtonUL(&tft, 250, 80, 50, 50, ILI9341_RED, ILI9341_GREEN, ILI9341_BLACK, (char *)"+", 11); //экран настроек
+  buttons[3].initButtonUL(&tft, 20, 170, 100, 50, ILI9341_RED, ILI9341_GREEN, ILI9341_BLACK, (char *) "Prev", 11); //экран настроек
+  buttons[4].initButtonUL(&tft, 200, 170, 100, 50, ILI9341_RED, ILI9341_GREEN, ILI9341_BLACK, (char *) "Next", 11); //экран настроек
+  buttons[5].initButtonUL(&tft, 270, 0, 50, 50, ILI9341_RED, ILI9341_GREEN, ILI9341_BLACK, (char *) ">", 11 ); //Главный экран
+  buttons[6].initButtonUL(&tft, 0, 0, 50, 50, ILI9341_RED, ILI9341_GREEN, ILI9341_BLACK, (char *) "<", 11 );  //Главный экран
+  buttons[7].initButtonUL(&tft, 0, 210, 30, 30, ILI9341_GREEN, ILI9341_RED, ILI9341_BLACK, (char *)"X", 11 ); //главный экран
+  buttons[8].initButtonUL(&tft, 270, 0, 50, 50, ILI9341_RED, ILI9341_GREEN, ILI9341_BLACK, (char *) ">", 11 ); //все данные
+  buttons[9].initButtonUL(&tft, 270, 0, 50, 50, ILI9341_RED, ILI9341_GREEN, ILI9341_BLACK, (char *)">", 11); //Отладка
+  buttons[10].initButtonUL(&tft, 270, 60, 50, 50, ILI9341_RED, ILI9341_GREEN, ILI9341_BLACK, (char *) "<", 11); //отладка
   isActive = false;
 } // END VOID SETUP
 
@@ -292,6 +293,8 @@ void mainscreen(void) {
       tft.print("LPK");
     if (OBDDATA[OBD_SPD] < 1)   //если стоим то литры в час
       tft.print("LPH");
+    tft.setCursor(280, 210);
+    tft.print("KM");
 
     tft.setFont(&DSEG7ModernMini_Bold13pt7b );
     tft.setCursor(16, 120);
@@ -315,6 +318,14 @@ void mainscreen(void) {
       tft.print(trip_avg_fuel_consumption, 1);
     else
       tft.print( "99.9");
+    tft.setCursor(186, 220);
+    if (trip_km < 10)
+      tft.print("000");
+    else if (trip_km < 100)
+      tft.print("00");
+    else if (trip_km < 1000)
+      tft.print("0");
+    tft.print( (int)trip_km);
     tft.setFont(&DSEG7ModernMini_Bold30pt7b);
     tft.drawRoundRect(8, 75, 128, 55, 12, ILI9341_RED);
     tft.drawRoundRect(8, 134, 128, 55, 12, ILI9341_RED);
@@ -472,6 +483,20 @@ void mainscreen(void) {
     if (maindata[2] != maindataold[2])
       send_tft("99.9", 20);
   showtime();
+
+  if (old_trip_km != (int)trip_km) {
+    tft.setFont(&DSEG7ModernMini_Bold13pt7b );
+    tft.fillRect(184, 193, 90, 30, BG_COLOR);
+    tft.setCursor(186, 220);
+    if (trip_km < 10)
+      tft.print("000");
+    else if (trip_km < 100)
+      tft.print("00");
+    else if (trip_km < 1000)
+      tft.print("0");
+    tft.print( (int)trip_km);
+    old_trip_km = (int)trip_km;
+  }
 
 }
 
@@ -781,43 +806,53 @@ void readTouch() {
       touchX = myWidth - Touch.getY();
     }
     if (CurrentDisplayIDX == 1) {
-      if (buttons[8].contains(touchX, touchY)) {
+      if (buttons[8].contains(touchX, touchY) && millis() - press_time > 300) {
+        press_time = millis();
         CurrentDisplayIDX++;
         isActive = false;
         drawScreenSelector();
       }
     }
     if (CurrentDisplayIDX == 2) {
-      if (buttons[5].contains(touchX, touchY)) {
+      if (buttons[5].contains(touchX, touchY) && millis() - press_time > 300) {
+        press_time = millis();
         CurrentDisplayIDX++;
         isActive = false;
         drawScreenSelector();
       }
-      if (buttons[6].contains(touchX, touchY)) {
+      if (buttons[6].contains(touchX, touchY) && millis() - press_time > 300) {
+        press_time = millis();
         CurrentDisplayIDX--;
         isActive = false;
         drawScreenSelector();
       }
-      if (buttons[7].contains(touchX, touchY)) {
+      if (buttons[7].contains(touchX, touchY) && millis() - press_time > 300) {
+        tft.setFont(&CPMono_v07_Plain9pt7b );
+        buttons[7].drawButton(true);
         cleardata();
+        delay(300);
+        buttons[7].drawButton();
+        press_time = millis();
       }
-
     }
 
     if (CurrentDisplayIDX == 3) {
-      if (buttons[9].contains(touchX, touchY)) {
+      if (buttons[9].contains(touchX, touchY) && millis() - press_time > 300) {
+        press_time = millis();
         CurrentDisplayIDX++;
         isActive = false;
         drawScreenSelector();
       }
-      if (buttons[10].contains(touchX, touchY)) {
+      if (buttons[10].contains(touchX, touchY) && millis() - press_time > 300) {
+        press_time = millis();
         CurrentDisplayIDX--;
         isActive = false;
         drawScreenSelector();
       }
     }
     if (CurrentDisplayIDX == 4) {
-      if (buttons[0].contains(touchX, touchY)) {
+      if (buttons[0].contains(touchX, touchY) && millis() - press_time > 300) {
+        press_time = millis();
         CurrentDisplayIDX = 2;
         isActive = false;
         drawScreenSelector();
@@ -825,15 +860,9 @@ void readTouch() {
       else if (buttons[1].contains(touchX, touchY) || buttons[2].contains(touchX, touchY) || buttons[3].contains(touchX, touchY) || buttons[4].contains(touchX, touchY))
         settings();
     }
-
-
-
-
   }
   touchY = 500;
   touchX = 500;
-
-
 }
 //-------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------
@@ -992,6 +1021,7 @@ void settings(void) {
   rtc.refresh();
   tft.setCursor(20, 40);
   tft.setFont(&CPMono_v07_Plain9pt7b);
+  tft.setTextColor(ILI9341_GREEN);
   if (isActive == false)
   {
     tft.fillScreen(ILI9341_BLACK);
@@ -1006,6 +1036,7 @@ void settings(void) {
     isActive = true;
     for (uint8_t i = 0; i < 5; i++)
       buttons[i].drawButton();
+    tft.setTextColor(ILI9341_GREEN);
     tft.setCursor(125, 110);
     tft.setFont(&DSEG7ModernMini_Bold30pt7b);
     tft.print(DT[work_id]);
@@ -1046,6 +1077,7 @@ void settings(void) {
         DT[4] = rtc.month();
         DT[5] = rtc.year();
         tft.fillRect(108, 37, 113, 74, BG_COLOR);
+        tft.setTextColor(ILI9341_GREEN);
         tft.print(DT[work_id]);
         tft.setCursor(120, 145);
         tft.setFont(&CPMono_v07_Plain9pt7b);
@@ -1067,6 +1099,7 @@ void settings(void) {
         DT[4] = rtc.month();
         DT[5] = rtc.year();
         tft.fillRect(108, 37, 113, 74, BG_COLOR);
+        tft.setTextColor(ILI9341_GREEN);
         tft.print(DT[work_id]);
         tft.setCursor(120, 145);
         tft.setFont(&CPMono_v07_Plain9pt7b);
@@ -1075,6 +1108,7 @@ void settings(void) {
     case 3: {
         if (work_id > 0) work_id--;
         tft.fillRect(108, 37, 130, 114, BG_COLOR);
+        tft.setTextColor(ILI9341_GREEN);
         tft.print(DT[work_id]);
         tft.setCursor(120, 145);
         tft.setFont(&CPMono_v07_Plain9pt7b);
@@ -1083,6 +1117,7 @@ void settings(void) {
     case 4: {
         if (work_id < 5) work_id++;
         tft.fillRect(108, 37, 130, 114, BG_COLOR);
+        tft.setTextColor(ILI9341_GREEN);
         tft.print(DT[work_id]);
         tft.setCursor(120, 145);
         tft.setFont(&CPMono_v07_Plain9pt7b);
