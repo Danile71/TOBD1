@@ -6,6 +6,7 @@
 // This is made for diaply with an OLED display using the U8glib - which allow wide range of display types with minor adjusments.
 // Many thanks to GadgetFreak for the greate base code for the reasding of the data.
 // If you want to use invert line - note the comments on the MY_HIGH and the INPUT_PULLUP in the SETUP void.
+#include "screens.cpp"
 #include <FRAM24CXX.h>
 #include <uRTCLib.h>
 #include "SPI.h"
@@ -24,7 +25,7 @@
 //#define LOGGING_MINIMAL //запись минимума данных
 #define LOGGING_FULL    //Запись на SD всех данных
 //#define SECOND_O2SENS  // Включение 2го сенсора кислорода для V движков
-#define DEBUG_OUTPUT true // for debug option - swith output to Serial
+#define DEBUG_OUTPUT false // for debug option - swith output to Serial
 
 //DEFINE пинов под входы-выходы
 //#define LED_PIN         33  //встроенный светодиод
@@ -34,7 +35,8 @@
 //#define TOGGLE_BTN_PIN  18 // D4 screen change PIN
 #define TFT_CS         PA4
 #define TFT_DC         PC15
-
+#define TFT_LED        PA2
+#define LIGHT_PIN   PA1
 //DEFINE констант расходомера
 #define Ls 0.004020653 //производительсность форсунки литров в секунду // базовый 0.004 или 240cc
 #define Ncyl 6.0 //кол-во цилиндров
@@ -63,12 +65,36 @@ bool OBDFLAG[TOBD_ID_MAX + 1], OLDOBDFLAG[TOBD_ID_MAX + 1];
 #define TOBD_ID_MAX 9
 float OBDDATA[TOBD_ID_MAX], OLDOBDDATA[TOBD_ID_MAX];
 bool OBDFLAG[TOBD_ID_MAX + 1], OLDOBDFLAG[TOBD_ID_MAX + 1];
-
+const uint8_t numReadings = 100;
 
 const char* TOBD_ID_NAME[TOBD_ID_MAX] = {"INJ", "IGN", "IAC", "RPM", "MAP", "ECT", "TPS", "SPD", "VF"};
 const char* DT_NAME[6] = {"Hour", "Minute", "Week Day", " Month Day", "Month", "Year"};
 float total_fuel_consumption = 0;
 float total_inj_dur_RO = 0;
+struct OXDATA
+{
+  uint16_t min[10];
+  uint16_t max[10];
+  uint32_t time_min[10];
+  uint32_t time_max[10];
+  uint16_t min_avg;
+  uint16_t max_avg;
+  float freq;
+};
+
+
+struct LIGHT_STRUCT
+{
+  uint16_t RAW;
+  uint16_t current;
+  uint16_t target;
+  uint16_t last;
+  const uint8_t P = 20;
+  uint16_t RAW_VAL = 0;
+};
+
+OXDATA OX;
+LIGHT_STRUCT TFT_BL;
 
 boolean _isLPK = false;
 
@@ -99,7 +125,10 @@ uint32_t touchX, touchY;
 float maindata[4], maindataold[4];
 
 uint8_t CurrentDisplayIDX = 1, TT_last = 0, TT_curr = 0;
-int16_t OX, TT;
+int16_t _OX, TT;
+uint8_t ox_id_max = 0;
+uint8_t ox_id_min = 0;
+uint16_t readIndex = 0;
 
 uint8_t work_id = 0;
 volatile uint8_t ToyotaNumBytes, ToyotaID, ToyotaData[TOYOTA_MAX_BYTES];
@@ -126,6 +155,10 @@ URTouch  Touch( PB13, PB12, PB15, PB14, PA8);
 #define BG_COLOR BLACK
 uint8_t DT[6];
 void setup() {
+  for (uint8_t iii = 0; iii < 10; iii++) {
+    OX.min[iii] = 2000;
+    OX.max[iii] = 0;
+  }
   int check = 0;
   Serial.begin(115200);
   Serial1.begin(115200);
@@ -169,6 +202,8 @@ void setup() {
   pinMode(ENGINE_DATA_PIN, INPUT); // VF1 PIN
   pinMode(TT_PIN, INPUT_ANALOG);
   pinMode(OX_PIN, INPUT_ANALOG);
+  pinMode(TFT_LED, PWM);
+  pinMode(LIGHT_PIN, INPUT_ANALOG);
   attachInterrupt(ENGINE_DATA_PIN, ChangeState, CHANGE); //setup Interrupt for data line
   CurrentDisplayIDX = 2; // set to display 2
   //Расходомер
@@ -198,9 +233,36 @@ void setup() {
 void loop(void) {
   unsigned long new_t;
   unsigned int diff_t;
-  if (millis() % 100 == 0)
-    readTouch();
+  if (millis() % 2 == 0)
+  {
+    if (readIndex < numReadings)
+    {
+      TFT_BL.RAW_VAL += 4095 - analogRead(LIGHT_PIN); //набор данных с сенсора света для усреднения
+      readIndex++;
+    }
+    else
+    {
+      readIndex = 0;
+      TFT_BL.RAW = TFT_BL.RAW_VAL / numReadings;   //усредняем
+      TFT_BL.target = map(TFT_BL.RAW, 0, 4095, 0, 65535); //масштабируем
+      Serial.print("Analog reading = ");
+      Serial.println(TFT_BL.RAW);
+    }
+  }
 
+  if (millis() % 2 == 0) {
+    if (TFT_BL.current - TFT_BL.P > TFT_BL.target)            //+- 20 чтобы яркость не прыгала
+      TFT_BL.current -= TFT_BL.P;                             //увеличиваем яркость с шагом 20
+    if (TFT_BL.current + TFT_BL.P < TFT_BL.target)            // +- 20 чтобы яркость не прыгала
+      TFT_BL.current += TFT_BL.P;                             //уменьшаем яркость с шагом 20
+    if (TFT_BL.current > 62000) TFT_BL.current = 62000;       //минимальная яркость 62000
+    pwmWrite(TFT_LED, TFT_BL.current);
+    Serial.print("TFT BRIGHTness = ");
+    Serial.println(TFT_BL.current);
+  }
+  if (millis() % 100 == 0) {
+    readTouch();
+  }
   if ((ToyotaNumBytes > 0) && (CurrentDisplayIDX != 4))  {  // if found bytes
     getOBD();
     new_t = millis();
@@ -250,12 +312,42 @@ void loop(void) {
     ToyotaNumBytes = 0;     // reset the counter.
   } // end if (ToyotaNumBytes > 0)
 
-  if (millis() % 50 == 0 && LoggingOn == true && CurrentDisplayIDX == 6) { //каждые 50мс, когда включено логирование и выбран экран с флагами(!)
-    //    OX = analogRead(OX_PIN);
-    if (OX < 400) { //исключаю ложные показание > ~1.3В
-      //      Serial1.print(';');
-      //      Serial1.print(((float)OX * VREF_MEASURED) / 1024, 3 );
-      //      Serial1.println();
+  if (millis() % 50 == 0) { //каждые 50мс, когда включено логирование и выбран экран с флагами(!)
+    if (ox_id_min == 9) {
+      for (uint8_t zz = 0; zz < 10; zz++)
+      {
+        OX.min_avg = OX.min[zz]++;
+        OX.min[zz] = 2000;
+      }
+      OX.min_avg = (int)OX.min_avg / 10;
+      ox_id_min = 0;
+    }
+    if (ox_id_max == 9) {
+      for (uint8_t zz = 0; zz < 10; zz++)
+      {
+        OX.max_avg = OX.max[zz]++;
+        OX.max[zz] = 0;
+      }
+      OX.max_avg = (int)OX.max_avg / 10;
+      ox_id_max = 0;
+      OX.freq = (float)(OX.time_max[9] - OX.time_max[0]) / 10000.0; //частота в ГЦ
+      drawScreenSelector();
+    }
+
+    _OX = analogRead(OX_PIN);
+    if (_OX < 1240) { //исключаю ложные показание > ~1В
+      if (_OX > OX.max[ox_id_max]) {
+        OX.max[ox_id_max] = _OX;
+        OX.time_max[ox_id_max] = millis();
+      }
+      if (_OX < OX.min[ox_id_min]) {
+        OX.min[ox_id_min] = _OX;
+        OX.time_min[ox_id_min] = millis();
+      }
+      if (_OX < OX.max[ox_id_max] && millis() > OX.time_max[ox_id_max])
+        ox_id_max++;
+      if (_OX > OX.min[ox_id_min] && millis() > OX.time_min[ox_id_min])
+        ox_id_min++;
     }
   }
   if (millis() % 500 == 0) { //каждые пол секунды читаем состояние АКПП. И ничего не делать когда активны настройки
@@ -1141,47 +1233,64 @@ void summary_screen(void) {
   if (isActive == false) {                    //форсирую перерисовку  после переключения экрана
     tft.fillScreen(ILI9341_BLACK);
     isActive = true;        // ставлю флаг активного экрана чтобы не перерисовывать лишнее
-    tft.setCursor(10, 43);
+    tft.setCursor(10, 15);
     tft.print(F("TRIP   L"));
-    tft.setCursor(10, 73);
+    tft.setCursor(10, 45);
     tft.print(F("-- AVG L"));
-    tft.setCursor(10, 103);
+    tft.setCursor(10, 75);
     tft.print(F("TRIP  KM"));
-    tft.setCursor(10, 133);
+    tft.setCursor(10, 105);
     tft.print(F("-AVG SPD"));
-    tft.setCursor(10, 163);
+    tft.setCursor(10, 135);
     tft.print(F("TOTAL  L"));
-    tft.setCursor(10, 192);
+    tft.setCursor(10, 165);
     tft.print(F("TOTAL KM"));
-    tft.setCursor(140, 43);
+    tft.setCursor(10, 195);
+    tft.print(F("OX  FREQ"));
+    tft.setCursor(10, 225);
+    tft.print(F("OX MIN|MAX"));
+    tft.setCursor(140, 15);
     tft.print(trip_fuel_consumption, 1);
-    tft.setCursor(140, 73);
+    tft.setCursor(140, 45);
     tft.print(trip_avg_fuel_consumption, 1);
-    tft.setCursor(140, 103);
+    tft.setCursor(140, 75);
     tft.print(trip_km, 1);
-    tft.setCursor(140, 133);
+    tft.setCursor(140, 105);
     tft.print(trip_avg_speed, 1);
-    tft.setCursor(140, 163);
+    tft.setCursor(140, 135);
     tft.print(total_fuel_consumption, 1);
-    tft.setCursor(140, 192);
+    tft.setCursor(140, 165);
     tft.print(odometerRO, 1);
+    tft.setCursor(140, 195);
+    tft.print(OX.freq, 3);
+    tft.setCursor(140, 225);
+    tft.print((float)OX.min_avg * VREF_MEASURED  / 4095.0 , 2);
+    tft.print(F(" | "));
+    tft.print((float)OX.min_avg * VREF_MEASURED  / 4095.0 , 2);
     buttons[9].drawButton();
     buttons[10].drawButton();
   }                        //конец перерисовки
   else
   {
-    tft.setCursor(140, 43);
+    tft.setCursor(140, 15);
     send_tft(String(trip_fuel_consumption, 1), 20);
-    tft.setCursor(140, 73);
+    tft.setCursor(140, 45);
     send_tft(String(trip_avg_fuel_consumption, 1), 20);
-    tft.setCursor(140, 103);
+    tft.setCursor(140, 75);
     send_tft(String(trip_km, 1), 20);
-    tft.setCursor(140, 133);
+    tft.setCursor(140, 105);
     send_tft(String(trip_avg_speed, 1), 20);
-    tft.setCursor(140, 163);
+    tft.setCursor(140, 135);
     send_tft(String(total_fuel_consumption, 1), 20);
-    tft.setCursor(140, 192);
+    tft.setCursor(140, 165);
     send_tft(String(odometerRO, 1), 20);
+    tft.setCursor(140, 195);
+    send_tft(String(OX.freq, 3), 20);
+    tft.setCursor(140, 225);
+    tft.fillRect(137, 207, 138, 25, BG_COLOR);
+    tft.print((float)OX.min_avg * VREF_MEASURED  / 4095.0 , 2);
+    tft.print(F(" | "));
+    tft.print((float)OX.min_avg * VREF_MEASURED / 4095.0 , 2);
   } // end void drawalldata
 }
 
