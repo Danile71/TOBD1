@@ -247,7 +247,6 @@ void loop(void) {
       flag.f_num = 0;
     }
     flag.f_num++;
-
     getOBD();   //конвертаци данных + оформление их вмассив
     new_t = millis();
     if (new_t > t && OBDDATA[OBD_RPM] > 100 ) {// выполняем только когда на работающем двигателе
@@ -268,21 +267,19 @@ void loop(void) {
       if (LoggingOn == true) logData();         //запись в лог данных по двоному нажатию на кнопку
       SaveToFram();   //запись данных при остановке
     }
-
     trip_fuel_consumption = trip_inj_dur  * Ls / 1000.0;    //потребление топлива за поездку в литрах
     total_fuel_consumption = total_inj_dur_RO  * Ls / 1000.0;  //потребление топлива за все время. Из ЕЕПРОМ в литрах
     trip_avg_fuel_consumption = 100.0 * trip_fuel_consumption / trip_km; //средний расход за поездку
     trip_avg_speed = trip_km  * 3600000.0 / (float)trip_time ;       //средняя скорость за поездку
-
     drawScreenSelector();
     for (uint8_t i = 0; i < TOBD_ID_MAX; i++)
       OLDOBDDATA[i] = OBDDATA[i];
     for (uint8_t i = 0; i < TOBD_ID_MAX + 1; i++)
       OLDOBDFLAG[i] = OBDFLAG[i];
+    for (uint8_t i = 0; i < 4; i++)
+      maindataold[i] = maindata[i];
     ToyotaNumBytes = 0;     // reset the counter.
   } // end if (ToyotaNumBytes > 0)
-
-
 }
 
 
@@ -293,30 +290,30 @@ void mainscreen(void) {
     showtime();
     tft.setFont(&CPMono_v07_Light6pt7b );
     tft.setCursor(16, 90);
-    tft.print("TRIP FUEL");
+    tft.print(F("TRIP FUEL"));
     tft.setCursor(16, 146);
-    tft.print("COOLANT TEMP");
+    tft.print(F("COOLANT TEMP"));
     tft.setCursor(196, 90);
-    tft.print("INSTANT FUEL");
+    tft.print(F("INSTANT FUEL"));
     tft.setCursor(196, 146);
-    tft.print("AVERAGE TRIP");
+    tft.print(F("AVERAGE TRIP"));
     tft.setCursor(16, 90);
-    tft.print("TRIP FUEL");
+    tft.print(F("TRIP FUEL"));
     tft.setCursor(48, 209);
-    tft.print("TRIP");
+    tft.print(F("TRIP"));
     tft.setFont(&CPMono_v07_Plain9pt7b );
     tft.setCursor(117, 120);
-    tft.print("L");
+    tft.print(F("L"));
     tft.setCursor(117, 182);
-    tft.print("C");
+    tft.print(F("C"));
     tft.drawCircle(111, 170, 3, ILI9341_GREEN);
     tft.setCursor(270, 182);
-    tft.print("LPK");
+    tft.print(F("LPK"));
     tft.setCursor(270, 120);
     if (OBDDATA[OBD_SPD] > 1)       //если есть движение то литры на 100км
-      tft.print("LPK");
+      tft.print(F("LPK"));
     if (OBDDATA[OBD_SPD] < 1)   //если стоим то литры в час
-      tft.print("LPH");
+      tft.print(F("LPH"));
     tft.setFont(&DSEG7ModernMini_Bold13pt7b );
     tft.setCursor(16, 120);
     tft.print(trip_fuel_consumption, 1 );
@@ -491,16 +488,11 @@ void mainscreen(void) {
       tft.setFont(&CPMono_v07_Light6pt7b );
       tft.setCursor(16, 90);
       tft.fillRect(16, 82, 100, 12, BG_COLOR);
-      tft.print("FUEL REMAINS");
+      tft.print(F("FUEL REMAINS"));
 
       tft.setCursor(234, 209);
       tft.fillRect(231, 196, 40, 19, BG_COLOR);
-      tft.print("TIME");
-
-
-
-
-
+      tft.print(F("TIME"));
 
       tft.setFont(&DSEG7ModernMini_Bold13pt7b );
       tft.setCursor(16, 120);
@@ -522,10 +514,6 @@ void mainscreen(void) {
     tft.setCursor(90, 225);
     tft.print(TimeToString(trip_time));
   }
-
-
-
-
   if (OBDDATA[OBD_ECT] < 50)
     tft.setTextColor(ILI9341_BLUE);
   else if (OBDDATA[OBD_ECT] < 99) tft.setTextColor(ILI9341_GREEN);
@@ -624,61 +612,60 @@ void drawAllData(void) {
 
     if (OBDFLAG[0] == true) {
       tft.setCursor(160, 18);
-      tft.print("START");
+      tft.print(F("START"));
       tft.setCursor(186, 36);
-      tft.print("ENRICH");
+      tft.print(F("ENRICH"));
     }
     if (OBDFLAG[1] == true)  {
       tft.setCursor(160, 54);
-      tft.print("COLD");
+      tft.print(F("COLD"));
     }
 
     if (OBDFLAG[2] == true)  {
       tft.setCursor(160, 72);
-      tft.print("KNOCKING");
+      tft.print(F("KNOCKING"));
     }
 
     if (OBDFLAG[3] == true)  {
       tft.setCursor(160, 90);
-      tft.print("OPEN LOOP");
+      tft.print(F("OPEN LOOP"));
     }
 
     if (OBDFLAG[4] == true)  {
       tft.setCursor(160, 108);
-      tft.print("ACCEL");
+      tft.print(F("ACCEL"));
       tft.setCursor(186, 126);
-      tft.print("ENRICH");
+      tft.print(F("ENRICH"));
     }
 
     if (OBDFLAG[5] == true)  {
       tft.setCursor(160, 144);
-      tft.print("STARTER");
+      tft.print(F("STARTER"));
     }
 
     if (OBDFLAG[6] == true)  {
       tft.setCursor(160, 162);
-      tft.print("IDLE");
+      tft.print(F("IDLE"));
     }
 
     if (OBDFLAG[7] == true) {
       tft.setCursor(160, 180);
-      tft.print("AIR COND");
+      tft.print(F("AIR COND"));
     }
 
     if (OBDFLAG[8] == true)  {
       tft.setCursor(160, 198);
-      tft.print("NEUTRAL");
+      tft.print(F("NEUTRAL"));
     }
 
     tft.setCursor(160, 216);
     if (OBDFLAG[9] == true)  {
       tft.fillRect(160, 203, 160, 19, ILI9341_BLACK);
-      tft.print("LEAN");
+      tft.print(F("LEAN"));
     } else if (OBDFLAG[9] == false) {
       tft.fillRect(160, 203, 160, 19, ILI9341_BLACK);
-      tft.print("RICH");
+      tft.print(F("RICH"));
     }
-
     buttons[8].drawButton();
   }                        //конец перерисовки
   else
@@ -1063,7 +1050,6 @@ void logData() {
   Serial1.println();
 }
 
-
 void SaveToFram() {
   if (OBDDATA[OBD_SPD] == 0)
     if (flagNulSpeed == false)
@@ -1081,7 +1067,6 @@ void SaveToFram() {
         last_log_time = millis();                             //чтобы не писать лишний раз
       }
   if (OBDDATA[OBD_SPD] != 0) flagNulSpeed = false;     //начали двигаться - разрешаем запись
-
   if (millis() - last_log_time > 180000)
     if (_fram)
     { //Запись данных в EEPROM каждые 3 минуты. Чтобы не потерять данные при движении на трассе
@@ -1090,8 +1075,6 @@ void SaveToFram() {
       FRAM.write(8, odometerRO);
       FRAM.write(12, total_inj_dur_RO);
       FRAM.write(16, trip_inj_dur);
-      Serial.println ("trip_inj_dur saved");
-      Serial.println (trip_inj_dur, 2);
       FRAM.write(20, total_time_RO);
       last_log_time = millis();
     }
@@ -1114,25 +1097,23 @@ void showtime()
   if (isActive == false)
   {
     tft.setCursor(57, 60);
-    if (rtc.hour() < 10) tft.print("0");
+    if (rtc.hour() < 10) tft.print(F("0"));
     tft.print(rtc.hour());
     tft.print(F(":"));
-    if (rtc.minute() < 10) tft.print("0");
+    if (rtc.minute() < 10) tft.print(F("0"));
     tft.print(rtc.minute());
   }
   if (omm != rtc.minute())
   {
     tft.setCursor(57, 60);
     tft.fillRect(76, 0, 173, 68, BG_COLOR);
-    if (rtc.hour() < 10) tft.print("0");
+    if (rtc.hour() < 10) tft.print(F("0"));
     tft.print(rtc.hour());
     tft.print(F(":"));
-    if (rtc.minute() < 10) tft.print("0");
+    if (rtc.minute() < 10) tft.print(F("0"));
     tft.print(rtc.minute());
     omm = rtc.minute();
   }
-  for (uint8_t i = 0; i < 4; i++)
-    maindataold[i] = maindata[i];
 }
 
 void settings(void) {
